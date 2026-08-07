@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; }
+        .header { background: #e65100; color: white; padding: 20px; text-align: center; }
+        .content { padding: 20px; background: #f9f9f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; margin: 15px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border-left: 4px solid #e65100; }
+        .badge { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+        .badge-orange { background: #fff3e0; color: #e65100; }
+        .footer { padding: 15px; text-align: center; color: #999; font-size: 12px; border-top: 1px solid #eee; }
+        .btn { display: inline-block; padding: 10px 20px; background: #e65100; color: white; text-decoration: none; border-radius: 4px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Super Apps - IT Management</h2>
+        <p>Backup Failure Alert</p>
+    </div>
+    <div class="content">
+        <p>Hi Team,</p>
+        <p>A backup job has failed:</p>
+        <div class="card">
+            <h3>Backup Failed</h3>
+            <p><strong>Server:</strong> {{server_name}}</p>
+            <p><strong>Date:</strong> {{backup_date}}</p>
+            <p><strong>Reason:</strong> {{reason}}</p>
+            <p><strong>Status:</strong> <span class="badge badge-orange">FAILED</span></p>
+        </div>
+        <p>Please check the backup logs and take appropriate action.</p>
+        <p>
+            <a href="{{app_url}}/modules/backup-check" class="btn">View Backup Status</a>
+        </p>
+    </div>
+    <div class="footer">
+        <p>This is an automated notification from Super Apps IT Management System.</p>
+        <p>Please do not reply to this email.</p>
+    </div>
+</body>
+</html>

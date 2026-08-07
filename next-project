@@ -1,0 +1,58 @@
+Saat ini, setiap login selalu minta OTP jika OTP diaktifkan di Settings. Tidak ada mekanisme "remember device" atau "trust this device".
+Perbandingan Pendekatan
+Pendekatan	Security	UX	Compliance
+OTP Setiap Login (sekarang)	🔴 Tinggi	❌ Repot	✅ ISO 27001 friendly
+OTP 1x/Hari	⚠️ Medium	✅ Nyaman	⚠️ Perlu justifikasi
+OTP + Remember Device	✅ Seimbang	✅ Nyaman	✅ Best practice
+Rekomendasi Saya
+Trust Device / Remember Me — lebih profesional:
+- Login pertama di device baru → wajib OTP
+- Setelah OTP verified → set cookie "trusted device" (7-30 hari)
+- Login berikutnya dari device yang sama → skip OTP
+- Jika device berbeda / cookie expired → minta OTP lagi
+Ini yang dipakai Google, Microsoft, AWS, dll.
+Implementasi yang Diperlukan
+1. New DB table: trusted_devices (user_id, device_fingerprint, expires_at)
+2. Login flow update: Cek trusted device sebelum minta OTP
+3. Frontend: Checkbox "Trust this device for 30 days" di OTP page
+4. Settings: Configurable trust duration (7/14/30 hari)
+Apakah Anda ingin saya buatkan plan dan implementasikan fitur Trust Device ini? Atau preferensi lain (misalnya OTP 1x/hari berdasarkan IP)?
+
+
+
+
+
+  Session   Membaca rules AGENTS.md di root
+  Continue  opencode -s ses_1de426df9ffe6DHb4EnRidvrOm
+
+
+
+
+
+✅ Already Implemented
+- Full CRUD for 5 categories (Users, Hardware, Software, Virtual Infrastructure, Information) with 22 sub-categories
+- Filtering (search, category, sub-category, classification, status) + sorting + pagination
+- Statistics dashboard (total, by category, classification, status)
+- Detail modal with Asset Info tab
+- Configuration management (CRUD) + Change History for Hardware & Virtual Infrastructure (just fixed)
+- Password encryption & secure reveal (FTP/Samba users)
+- Auto-generated asset codes, CSV export, activity logging, optimistic locking
+🔧 Missing / Incomplete Features
+High Priority (Recommended to add)
+1. Bulk Operations UI - Backend endpoints exist (bulk-delete, bulk-status, bulk-classification) but no checkboxes/select-all/bulk-action toolbar in the table
+2. Import CSV/Excel - No way to bulk-import assets from spreadsheet
+3. Export with Attributes - Current CSV export only includes basic fields, missing extension data (serial numbers, IPs, passwords, etc.)
+4. Information Category Table - Sub-category specific fields (db_type, dbms, doc_type, etc.) don't show in table columns
+5. Asset Change History - General asset create/update/delete audit trail visible in UI (currently only config changes have history)
+Medium Priority
+6. Warranty Expiration Alerts - warranty_until field exists but no notifications/dashboard
+7. Software License Expiration - No expiration date tracking for subscriptions
+8. Document Attachments - No file upload capability for assets (invoices, contracts, manuals)
+9. Asset Relationships - No way to link assets (e.g., "VM runs on this host", "software installed on hardware")
+10. Decommission/Transfer Workflow - No guided lifecycle management
+Low Priority (Nice to have)
+11. QR/Barcode Generation - For asset label printing
+12. Asset Tagging - Flexible categorization beyond fixed category/sub-category
+13. Charts/Visualizations - Stats are basic cards only
+14. Duplicate Detection - Prevent duplicate serial numbers/names
+15. Soft Delete - Archive instead of hard delete

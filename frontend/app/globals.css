@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base styles */
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Disable transitions on initial load to prevent flash */
+.no-transitions,
+.no-transitions * {
+  transition: none !important;
+}
+
+/* Smooth theme transitions (only after page is loaded) */
+.theme-transition,
+.theme-transition * {
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Dark theme consistency - prevent white flash on click/focus */
+*:focus,
+*:active {
+  outline-color: rgb(59, 130, 246);
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus {
+  outline: 2px solid rgb(59, 130, 246);
+  outline-offset: 1px;
+}
+
+/* Prevent white background on clicked/active elements in dark mode */
+html.dark *:focus {
+  background-color: transparent;
+}
+
+html.dark input:focus,
+html.dark select:focus,
+html.dark textarea:focus {
+  background-color: rgb(55, 65, 81);
+}
+
+html.dark button:active {
+  background-color: inherit;
+}

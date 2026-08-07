@@ -1,0 +1,154 @@
+---
+# Ansible Playbook: Setup SAR Monitoring di Semua Server
+#
+# Usage:
+#   ansible-playbook -i hosts.ini setup_sar_ansible.yml
+#
+# Requirements:
+#   - Ansible installed on control machine
+#   - SSH access to all target servers (as root or sudo user)
+#   - Inventory file 'hosts.ini' with server list
+#
+
+- name: Setup SAR Monitoring on All Servers
+  hosts: all_servers
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    sar_username: "backup_reader"
+    sar_password: ""  # ← EMPTY! Tidak pakai password
+    sar_log_dir: "/var/log/sa"
+    setup_script_url: "https://raw.githubusercontent.com/your-repo/super-apps/main/backend/scripts/setup_sudoers.sh"
+    
+    # SSH Key Authentication
+    deploy_ssh_key: yes  # ← Set to YES
+    ssh_public_key: ""   # ← Paste public key di sini atau pakai command line
+    
+  tasks:
+    - name: Print setup info
+      debug:
+        msg: "Setting up SAR monitoring for {{ inventory_hostname }} (SSH Key Auth)"
+    
+    # Step 1: Create backup_reader user
+    - name: Create backup_reader user
+      user:
+        name: "{{ sar_username }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+      when: ansible_user_id != sar_username
+    
+    # Step 2: Setup SSH Key Authentication (NO PASSWORD)
+    - name: Deploy SSH public key for backup_reader
+      authorized_key:
+        user: "{{ sar_username }}"
+        key: "{{ ssh_public_key }}"
+        state: present
+        exclusive: no
+      when: deploy_ssh_key and ssh_public_key != ""
+    
+    # Skip password setup (not needed for SSH key auth)
+    - name: Skip password setup (using SSH key)
+      debug:
+        msg: "SSH Key authentication enabled - no password needed"
+    
+    # Step 3: Install sysstat (SAR)
+    - name: Install sysstat (Rocky/CentOS/RHEL)
+      dnf:
+        name: sysstat
+        state: present
+      when: ansible_os_family == "RedHat"
+    
+    - name: Install sysstat (Ubuntu/Debian)
+      apt:
+        name: sysstat
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+    
+    # Step 4: Enable sysstat service
+    - name: Enable and start sysstat
+      systemd:
+        name: sysstat
+        enabled: yes
+        state: started
+    
+    # Step 5: Enable SAR logging (Debian/Ubuntu)
+    - name: Enable SAR in /etc/default/sysstat
+      lineinfile:
+        path: /etc/default/sysstat
+        regexp: '^ENABLED='
+        line: 'ENABLED="true"'
+        state: present
+      when: ansible_os_family == "Debian"
+    
+    # Step 6: Create sudoers file
+    - name: Create sudoers file for backup_reader
+      copy:
+        dest: /etc/sudoers.d/backup_reader
+        content: |
+          # SAR Monitoring - Sudoers Configuration
+          # User: backup_reader
+          
+          # SAR CPU/RAM metrics
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/sar
+          
+          # Read SAR log files
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /bin/cat {{ sar_log_dir }}/*
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/tail {{ sar_log_dir }}/*
+          
+          # Disk usage
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/df
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/df -h
+          
+          # Network connections
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/ss
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/ss -tan
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /usr/bin/ss -tan state established
+          
+          # Network interface info
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /sbin/ip
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /sbin/ip route
+          {{ sar_username }} ALL=(ALL) NOPASSWD: /sbin/ip -o link show
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -c -f %s'
+    
+    # Step 7: Create SAR log directory
+    - name: Ensure SAR log directory exists
+      file:
+        path: "{{ sar_log_dir }}"
+        state: directory
+        mode: '0755'
+    
+    # Step 8: Test sudo access
+    - name: Test sudo access for backup_reader
+      become_user: "{{ sar_username }}"
+      command: sudo sar -u -f {{ sar_log_dir }}/sa{{ ansible_date_time.day }}
+      register: sar_test
+      ignore_errors: yes
+      changed_when: false
+    
+    - name: Print test result
+      debug:
+        msg: "SAR test: {{ 'PASSED ✓' if sar_test.rc == 0 else 'MAY HAVE ISSUES ⚠' }}"
+    
+    # Step 9: Print summary
+    - name: Print setup summary
+      debug:
+        msg: |
+          =========================================
+          SAR Monitoring Setup Complete!
+          =========================================
+          Server: {{ inventory_hostname }}
+          User: {{ sar_username }}
+          SAR Directory: {{ sar_log_dir }}
+          Sysstat: Installed & Enabled
+          
+          Next Steps:
+          1. Change password for {{ sar_username }}
+          2. Test manual: ssh {{ sar_username }}@{{ inventory_hostname }} "sudo sar -u"
+          3. Add to dashboard with credentials
+          =========================================

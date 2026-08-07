@@ -1,0 +1,7 @@
+model_path: data/ai/qwen2.5-1.5b-instruct-q4_k_m.gguf
+heavy_model_path: data/ai/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+model_server_url: https://127.0.0.1:8081
+embedder_model_path: data/ai/embedder/paraphrase-multilingual-MiniLM-L12-v2
+max_input_tokens: 4096
+max_output_tokens: 512
+embed_confidence: 0.65

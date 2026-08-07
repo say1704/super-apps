@@ -1,0 +1,16 @@
+#!/bin/bash
+# Super Apps - pre-push gate (PR-merge gate lokal)
+# Runs the security check pipeline before allowing a push/merge.
+# Fail the push when the gate does not pass.
+#
+# Skip with: git push --no-verify
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+echo "==> [pre-push] Running security check pipeline..."
+if "$ROOT_DIR/scripts/security/check.sh"; then
+  echo "==> [pre-push] Security gate PASSED"
+  exit 0
+else
+  echo "==> [pre-push] SECURITY GATE FAILED — fix findings or use --no-verify to override"
+  exit 1
+fi

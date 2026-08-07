@@ -1,0 +1,86 @@
+# Secrets
+*.env
+*.env.backup
+!.env.example
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.backup.*
+*.db.pre-*
+*.db.test-backup.*
+*.bak
+*.backup
+*.backup.*
+*.sql
+*.dump
+backend/data/backups/
+backend/backups/
+*.key.*
+*.pre-migration.*
+
+# Python
+venv/
+.venv/
+**/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Uploads
+uploads/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Node
+node_modules/
+.next/
+out/
+
+# Aider
+.aider*
+openapi.json
+
+# AI Models (large binary files)
+backend/data/ai/
+
+# Sensitive files
+passwd
+backend/update_passwords.py
+*.key
+*.pem
+certs/
+backend/.superapps/
+
+# Runtime data (models, DB, backups, uploads) — never commit
+backend/data/
+backend/logs/
+logs/
+*.token
+
+# Local tooling / scratch / archived docs
+.qwen/
+.opencode/
+OLD-MD/
+
+# Debug/one-off scripts containing key material
+backend/test_decrypt.py
+
+# Internal security & dev artifacts — keep local, do NOT publish
+backend/test_*.py
+docs/Pentest/
+security/
