@@ -460,7 +460,7 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}Default login: admin / CHANGE_ME${NC}"
+echo -e "${YELLOW}First login: user 'admin' — set/change the admin password immediately after first login.${NC}"
 echo ""
 
 if [ "$NO_START" = false ]; then

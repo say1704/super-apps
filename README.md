@@ -20,6 +20,18 @@ maintenance, worklog/tasks, documentation, and an on-prem AI assistant.
 
 ## Setup
 
+### Quick install (recommended)
+
+One command handles system deps, Python venv, frontend build, PM2, TLS certs, and
+AI model download (Ubuntu 22.04/24.04, CentOS Stream 9/10):
+
+```bash
+./install.sh              # full install + start
+./install.sh --help       # options: --gpu, --skip-models, --no-start, --force
+```
+
+### Manual setup
+
 ```bash
 # 1. Backend deps (Python venv)
 cd backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
