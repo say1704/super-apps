@@ -18,6 +18,20 @@ maintenance, worklog/tasks, documentation, and an on-prem AI assistant.
 - Backend workers bind `127.0.0.1` only; the LAN-facing entrypoint is the frontend on
   `:3443` (LAN IP auto-detected for CORS/allowed-hosts).
 
+### Verify load balancing
+
+`scripts/lb-check.sh` confirms the proxy is distributing traffic (reads the frontend
+proxy log; non-destructive by default):
+
+```bash
+./scripts/lb-check.sh              # distribution, pinning, sticky-cookie assignment
+./scripts/lb-check.sh --failover   # also stops one worker, checks fail-over, restarts it
+```
+
+Checks: cookie `sa_worker=n` routes to worker `n`; `/ai/*` and `/token` stay pinned to
+worker-1; new clients get a `sa_worker` cookie. Exits non-zero if any check fails
+(CI/cron friendly).
+
 ## Setup
 
 ### Quick install (recommended)
