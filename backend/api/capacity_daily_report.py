@@ -1,5 +1,6 @@
 """Daily Capacity Report — ISO 27001:2022 Annex A 8.6 Capacity Management audit evidence."""
 import logging
+from collections import defaultdict
 from datetime import datetime, date
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session, aliased
@@ -8,7 +9,7 @@ from sqlalchemy import func
 from database import get_db
 from models import CapacityMetrics, User, NetworkInterface
 from api.dependencies import get_current_user, log_activity
-from api.capacity_planning import aggregate_network_by_date
+from api.capacity_planning import aggregate_network_by_date, compute_month_sla
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/capacity-reports", tags=["Capacity Reports"])
@@ -42,10 +43,12 @@ def _server_to_dict(record: CapacityMetrics, db: Session = None) -> dict:
         "ip_address": record.ip_address or '',
         "status": record.status,
         "alert_detail": alert_detail,
-        "cpu_peak": round(record.cpu_peak or 0, 1),
+        "cpu_peak": round(record.cpu_peak or 0, 2),
         "cpu_peak_time": record.cpu_peak_time or '-',
-        "ram_peak": round(record.ram_peak or 0, 1),
+        "cpu_peak_max": round(record.cpu_peak_max or 0, 2),
+        "ram_peak": round(record.ram_peak or 0, 2),
         "ram_peak_time": record.ram_peak_time or '-',
+        "ram_peak_max": round(record.ram_peak_max or 0, 2),
         "disk_root_pct": record.disk_root_pct or 0,
         "disk_data_pct": disk_data_val,
         "disk_data_label": disk_label,
@@ -150,9 +153,9 @@ def get_daily_capacity_report(
     warning_count = sum(1 for s in servers_data if s['status'] == 'warning')
     critical_count = sum(1 for s in servers_data if s['status'] == 'critical')
 
-    avg_cpu = round(sum(s['cpu_peak'] for s in servers_data) / total, 1) if total else 0
-    avg_ram = round(sum(s['ram_peak'] for s in servers_data) / total, 1) if total else 0
-    avg_disk_root = round(sum(s['disk_root_pct'] for s in servers_data) / total, 1) if total else 0
+    avg_cpu = round(sum(s['cpu_peak'] for s in servers_data) / total, 2) if total else 0
+    avg_ram = round(sum(s['ram_peak'] for s in servers_data) / total, 2) if total else 0
+    avg_disk_root = round(sum(s['disk_root_pct'] for s in servers_data) / total, 2) if total else 0
 
     # Format date range for response
     if start_date and end_date:
@@ -210,4 +213,89 @@ def export_capacity_report(
         "total": len(records),
         "from_date": from_date,
         "to_date": to_date,
+    }
+
+
+@router.get("/sla-export", response_model=dict)
+def export_sla_report(
+    from_date: str = Query(...),
+    to_date: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SLA analysis per server per month — days with data / days in month (for PDF). Mirrors /export pattern."""
+
+    try:
+        start_date = datetime.strptime(from_date, "%Y-%m-%d").date()
+        end_date = datetime.strptime(to_date, "%Y-%m-%d").date()
+        if start_date > end_date:
+            raise HTTPException(status_code=400, detail="from_date must be before or equal to to_date")
+        if (end_date - start_date).days > 365:
+            raise HTTPException(status_code=400, detail="Date range too large. Maximum 365 days allowed")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    records = db.query(CapacityMetrics).filter(
+        CapacityMetrics.tanggal >= start_date,
+        CapacityMetrics.tanggal <= end_date,
+    ).order_by(CapacityMetrics.hostname, CapacityMetrics.tanggal).all()
+
+    if not records:
+        return {
+            "rows": [], "total": 0,
+            "from_date": from_date, "to_date": to_date,
+            "summary": {"servers": 0, "avg_sla": 0.0},
+        }
+
+    # Aggregate per (hostname, year-month): distinct dates + latest record (for uptime snapshot)
+    days_by_key = defaultdict(set)
+    latest_by_key = {}
+    for r in records:
+        key = (r.hostname, r.tanggal.strftime('%Y-%m'))
+        days_by_key[key].add(r.tanggal)
+        if key not in latest_by_key or r.tanggal > latest_by_key[key].tanggal:
+            latest_by_key[key] = r
+
+    rows = []
+    sla_values = []
+    for (hostname, ym), dates in days_by_key.items():
+        year, month = map(int, ym.split('-'))
+        computed = compute_month_sla(list(dates), year, month, end_date)
+        if computed is None:
+            continue
+        coverage = computed["coverage_pct"]
+        if coverage is not None:
+            sla_values.append(coverage)
+        latest = latest_by_key[(hostname, ym)]
+        system_info = latest.system_info or {}
+        rows.append({
+            "hostname": hostname,
+            "year_month": ym,
+            "days_of_data": computed["days_of_data"],
+            "days_in_month": computed["days_in_month"],
+            "days_monitored": computed["days_monitored"],
+            "days_no_data": computed["days_no_data"],
+            "days_down": computed["days_down"],
+            "coverage_pct": coverage,
+            "uptime": system_info.get("uptime") or "-",
+            "uptime_date": latest.tanggal.isoformat(),
+            "status": computed["status"],
+        })
+
+    rows.sort(key=lambda r: (r["hostname"], r["year_month"]))
+    summary = {
+        "servers": len({r["hostname"] for r in rows}),
+        "avg_sla": round(sum(sla_values) / len(sla_values), 2) if sla_values else 0.0,
+    }
+
+    log_activity(db, current_user.id, "EXPORT", "capacity",
+                 f"Exported SLA analysis (PDF) from {from_date} to {to_date}")
+    db.commit()
+
+    return {
+        "rows": rows,
+        "total": len(rows),
+        "from_date": from_date,
+        "to_date": to_date,
+        "summary": summary,
     }

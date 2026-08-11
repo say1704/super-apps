@@ -1,3 +1,5 @@
+import { monthFull, isRunningMonth, slaVerdict, SLA_NOTE } from './sla-status';
+
 /**
  * Export data to CSV file
  */
@@ -195,13 +197,13 @@ export async function exportCapacityReportPDF(
       r.hostname,
       r.tanggal || '-',
       r.status.toUpperCase(),
-      r.cpu_peak != null ? `${r.cpu_peak}%` : '-',
+      r.cpu_peak_max != null ? `${r.cpu_peak_max.toFixed(2)}%` : (r.cpu_peak != null ? `${r.cpu_peak.toFixed(2)}%` : '-'),
       r.cpu_peak_time || '-',
-      r.ram_peak != null ? `${r.ram_peak}%` : '-',
+      r.ram_peak != null ? `${r.ram_peak.toFixed(2)}%` : '-',
       r.ram_peak_time || '-',
-      r.disk_root_pct != null ? `${r.disk_root_pct}%` : '-',
+      r.disk_root_pct != null ? `${r.disk_root_pct.toFixed(2)}%` : '-',
     ];
-    if (hasSecDisk) row.push(r.disk_data_pct != null ? `${r.disk_data_pct}%` : '-');
+    if (hasSecDisk) row.push(r.disk_data_pct != null ? `${r.disk_data_pct.toFixed(2)}%` : '-');
     row.push(
       r.total_rx || '-',
       r.total_tx || '-',
@@ -330,6 +332,155 @@ export async function exportCapacityReportPDF(
   }
 
   doc.save(`capacity_report_${dateRange.replace(/[/ ]/g, '_')}.pdf`);
+}
+
+
+/**
+ * Export SLA analysis report PDF (per server per month coverage).
+ */
+export async function exportSLAPDF(
+  data: { rows: any[]; total: number; from_date: string; to_date: string; summary: { servers: number; avg_sla: number } },
+  fromDate: string,
+  toDate?: string,
+) {
+  if (!data.rows || data.rows.length === 0) {
+    console.warn('No SLA data to export');
+    return;
+  }
+
+  const { default: jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const navy = [36, 72, 141] as [number, number, number];
+
+  const { rows, summary } = data;
+  const dateRange = toDate && toDate !== fromDate ? `${fromDate} to ${toDate}` : fromDate;
+
+  // ── HEADER ──
+  doc.setFillColor(...navy);
+  doc.rect(0, 0, pageW, 32, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(20);
+  doc.setFont('helvetica', 'bold');
+  doc.text('LAPORAN ANALISA SLA', margin, 16);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  doc.text(`Semua Server | Periode: ${dateRange}`, margin, 26);
+
+  doc.setFontSize(9);
+  const nowStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  doc.text(`Dicetak: ${nowStr}`, pageW - margin, 16, { align: 'right' });
+  doc.text('Sistem Manajemen TI Terintegrasi — SLA Monitoring (SAR)', pageW - margin, 26, { align: 'right' });
+
+  // ── INFO BAR ──
+  let y = 44;
+  doc.setFontSize(9);
+  doc.setTextColor(80);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Total Server: ${summary?.servers ?? 0}`, margin, y);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(34, 139, 34);
+  doc.text(`Rata-rata SLA: ${(summary?.avg_sla ?? 0).toFixed(2)}%`, margin + 50, y);
+  doc.setTextColor(100);
+  doc.text(`Records: ${rows.length}`, margin + 130, y);
+
+  // ── KETERANGAN ──
+  y += 8;
+  doc.setFontSize(7);
+  doc.setTextColor(120);
+  doc.text('Keterangan: ' + SLA_NOTE + ' Target SLA >= 99% OK, 95-98.9% Warning, < 95% Kritikal. Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelumnya N/A.', margin, y);
+  y += 6;
+
+  // ── TABLE ──
+  const headers = ['No.', 'Hostname', 'Bulan', 'Hari Dipantau', 'Hari Data', 'Tanpa Data', 'SLA %', 'Uptime (saat ini)', 'Tgl Uptime', 'Status', 'Keterangan'];
+  const body = rows.map((r: any, i: number) => {
+    const hasSla = r.coverage_pct != null;
+    return [
+      i + 1,
+      r.hostname,
+      `${monthFull(r.year_month)}${isRunningMonth(r.year_month) ? ' (berjalan)' : ''}`,
+      hasSla ? (r.days_monitored ?? r.days_in_month) : '—',
+      hasSla ? r.days_of_data : '—',
+      hasSla ? (r.days_no_data ?? r.days_down) : '—',
+      hasSla ? `${r.coverage_pct.toFixed(2)}%` : '—',
+      r.uptime || 'N/A',
+      r.uptime_date || '-',
+      r.status || 'OK',
+      slaVerdict(r.status),
+    ];
+  });
+
+  autoTable(doc, {
+    startY: y,
+    head: [headers],
+    body,
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 2, valign: 'middle' },
+    headStyles: { fillColor: navy as any, textColor: 255, fontStyle: 'bold', halign: 'center' },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 10 },
+      1: { halign: 'left', cellWidth: 45 },
+      2: { halign: 'center', cellWidth: 22 },
+      3: { halign: 'center', cellWidth: 20 },
+      4: { halign: 'center', cellWidth: 20 },
+      5: { halign: 'center', cellWidth: 20 },
+      6: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
+      7: { halign: 'left', cellWidth: 55 },
+      8: { halign: 'center', cellWidth: 30 },
+      9: { halign: 'center', cellWidth: 22, fontStyle: 'bold' },
+      10: { halign: 'left' },
+    },
+    didParseCell: function (celldata) {
+      if (celldata.section !== 'body') return;
+      if (celldata.column.index === 6) {
+        const val = parseFloat(String(celldata.cell.raw));
+        if (!isNaN(val)) {
+          if (val < 95) {
+            (celldata.cell as any).styles.textColor = [220, 38, 38];
+            (celldata.cell as any).styles.fillColor = [254, 226, 226];
+          } else if (val < 99) {
+            (celldata.cell as any).styles.textColor = [202, 138, 4];
+            (celldata.cell as any).styles.fillColor = [254, 249, 195];
+          } else {
+            (celldata.cell as any).styles.textColor = [34, 139, 34];
+            (celldata.cell as any).styles.fillColor = [209, 250, 209];
+          }
+        }
+      }
+      if (celldata.column.index === 9) {
+        const val = String(celldata.cell.raw);
+        if (val === 'KRITIS') {
+          (celldata.cell as any).styles.textColor = [220, 38, 38];
+          (celldata.cell as any).styles.fillColor = [254, 226, 226];
+        } else if (val === 'WARNING') {
+          (celldata.cell as any).styles.textColor = [202, 138, 4];
+          (celldata.cell as any).styles.fillColor = [254, 249, 195];
+        } else {
+          (celldata.cell as any).styles.textColor = [34, 139, 34];
+          (celldata.cell as any).styles.fillColor = [209, 250, 209];
+        }
+      }
+    },
+  });
+
+  // ── FOOTER ──
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(7);
+    doc.setTextColor(150);
+    doc.text(`Halaman ${i} dari ${totalPages}`, pageW - margin, pageH - 8, { align: 'right' });
+    doc.text('Dokumen ini dihasilkan secara otomatis oleh Server Capacity Monitoring (SAR)', margin, pageH - 8);
+    doc.setDrawColor(200);
+    doc.line(margin, pageH - 12, pageW - margin, pageH - 12);
+  }
+
+  doc.save(`sla_report_${dateRange.replace(/[/ ]/g, '_')}.pdf`);
 }
 
 
