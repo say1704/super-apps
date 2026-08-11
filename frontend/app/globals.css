@@ -53,3 +53,19 @@ html.dark textarea:focus {
 html.dark button:active {
   background-color: inherit;
 }
+
+/* Login page entrance animation (ported to match animated login) */
+@keyframes fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-slide-up {
+  animation: fade-slide-up 0.6s ease-out;
+}

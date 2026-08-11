@@ -37,17 +37,6 @@ def _resolve_url() -> str:
 MODEL_SERVER_URL = _resolve_url()
 HTTP_TIMEOUT = 120.0
 
-def _get_api_key() -> str:
-    """Get model server API key from environment."""
-    return os.environ.get("MODEL_SERVER_API_KEY", "")
-
-def _get_headers() -> dict:
-    """Get headers for model server requests."""
-    api_key = _get_api_key()
-    if api_key:
-        return {"X-API-Key": api_key}
-    return {}
-
 
 async def query_llm(
     messages: List[dict],
@@ -89,7 +78,7 @@ async def health() -> dict:
     url = f"{MODEL_SERVER_URL}/health"
     try:
         async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
-            resp = await client.get(url, headers=_get_headers())
+            resp = await client.get(url)
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
@@ -135,7 +124,7 @@ async def _chat_completion(
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, verify=False) as client:
-            resp = await client.post(url, json=payload, headers=_get_headers())
+            resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
     except httpx.ConnectError:
@@ -174,7 +163,7 @@ async def _chat_completion_stream(
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, verify=False) as client:
-            async with client.stream("POST", url, json=payload, headers=_get_headers()) as resp:
+            async with client.stream("POST", url, json=payload) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):

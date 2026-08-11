@@ -1,13 +1,22 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { apiRequest } from '@/lib/auth';
 
 const STORAGE_KEY = 'ai_chat_history';
 
+interface QueryData {
+  type: 'count' | 'list';
+  count: number;
+  modul: string;
+  samples?: Record<string, unknown>[];
+}
+
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  timestamp: string;
+  query_data?: QueryData | null;
 }
 
 interface PendingAction {
@@ -22,6 +31,13 @@ interface PendingAction {
 interface ChatResponse {
   response: string;
   pending_action?: PendingAction | null;
+  query_data?: QueryData | null;
+}
+
+interface Suggestion {
+  icon: string;
+  text: string;
+  action: string;
 }
 
 function loadHistory(): Message[] {
@@ -45,8 +61,30 @@ export default function AiChat() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [undoAvailable, setUndoAvailable] = useState(false);
+  const [undoCountdown, setUndoCountdown] = useState(30);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fullContentRef = useRef('');
+
+  const fetchSuggestions = useCallback(async () => {
+    try {
+      const result = await apiRequest('/ai/suggest', { method: 'POST' });
+      setSuggestions(result.suggestions || []);
+    } catch {
+      // silent
+    }
+  }, []);
+
+  const startNewConversation = async () => {
+    setConversationId(null);
+    setMessages([]);
+    setPendingAction(null);
+    sessionStorage.removeItem(STORAGE_KEY);
+  };
 
   useEffect(() => {
     setMessages(loadHistory());
@@ -55,16 +93,57 @@ export default function AiChat() {
   useEffect(() => {
     if (open) {
       inputRef.current?.focus();
+      fetchSuggestions();
     }
-  }, [open]);
+  }, [open, fetchSuggestions]);
 
   useEffect(() => {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight });
-  }, [messages, pendingAction]);
+  }, [messages, pendingAction, undoAvailable]);
 
-  const addMessage = (msg: Message) => {
+  const startUndoTimer = () => {
+    setUndoCountdown(30);
+    if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+    undoTimerRef.current = setInterval(() => {
+      setUndoCountdown(prev => {
+        if (prev <= 1) {
+          if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+          setUndoAvailable(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const handleUndo = async () => {
+    if (undoTimerRef.current) clearInterval(undoTimerRef.current);
+    setUndoAvailable(false);
+    setLoading(true);
+    try {
+      const result: ChatResponse = await apiRequest('/ai/action/undo', { method: 'POST' });
+      addMessage({ role: 'assistant', content: result.response });
+    } catch (err: any) {
+      addMessage({ role: 'assistant', content: err.message || 'Gagal undo.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: Suggestion) => {
+    handleSend(suggestion.action);
+  };
+
+  const addMessage = (msg: Omit<Message, 'timestamp'>) => {
+    const now = new Date();
+    const ts = now.toLocaleString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: 'numeric',
+      month: 'short',
+    });
     setMessages(prev => {
-      const next = [...prev, msg];
+      const next = [...prev, { ...msg, timestamp: ts }];
       saveHistory(next);
       return next;
     });
@@ -83,6 +162,10 @@ export default function AiChat() {
         try {
           const result: ChatResponse = await apiRequest('/ai/confirm', { method: 'POST' });
           addMessage({ role: 'assistant', content: result.response });
+          if (result.response.startsWith('✅')) {
+            setUndoAvailable(true);
+            startUndoTimer();
+          }
         } catch (err: any) {
           addMessage({ role: 'assistant', content: err.message || 'Gagal mengonfirmasi.' });
         }
@@ -99,18 +182,126 @@ export default function AiChat() {
       return;
     }
 
+    // All other messages → SSE streaming endpoint
+    const storedToken = typeof window !== 'undefined'
+      ? sessionStorage.getItem('sa_auth_token')
+      : null;
+
+    const now = new Date();
+    const ts = now.toLocaleString('id-ID', {
+      hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short',
+    });
+
+    fullContentRef.current = '';
+    setMessages(prev => [...prev, { role: 'assistant', content: '', timestamp: ts }]);
+
     try {
-      const result: ChatResponse = await apiRequest('/ai/chat', {
+      const response = await fetch('/api/proxy/api/v1/ai/chat/stream', {
         method: 'POST',
-        body: JSON.stringify({ message: trimmed, history: messages }),
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(storedToken ? { 'Authorization': `Bearer ${storedToken}` } : {}),
+        },
+        body: JSON.stringify({
+          message: trimmed,
+          history: messages,
+          conversation_id: conversationId,
+        }),
       });
-      addMessage({ role: 'assistant', content: result.response });
-      if (result.pending_action) {
-        setPendingAction(result.pending_action);
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(errText || `HTTP ${response.status}`);
       }
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+
+          if (payload === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(payload);
+
+            if (parsed.token !== undefined) {
+              fullContentRef.current += parsed.token;
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0) {
+                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContentRef.current };
+                }
+                return updated;
+              });
+            }
+
+            if (parsed.response !== undefined) {
+              fullContentRef.current = parsed.response;
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0) {
+                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContentRef.current };
+                }
+                return updated;
+              });
+            }
+
+            if (parsed.pending_action) {
+              setPendingAction(parsed.pending_action);
+            }
+
+            if (parsed.conversation_id !== undefined) {
+              setConversationId(parsed.conversation_id);
+            }
+
+            if (parsed.query_data !== undefined) {
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0) {
+                  const last = updated[updated.length - 1];
+                  updated[updated.length - 1] = { ...last, query_data: parsed.query_data };
+                }
+                return updated;
+              });
+            }
+
+            if (parsed.error) {
+              fullContentRef.current = parsed.error;
+              setMessages(prev => {
+                const updated = [...prev];
+                if (updated.length > 0) {
+                  updated[updated.length - 1] = { ...updated[updated.length - 1], content: fullContentRef.current };
+                }
+                return updated;
+              });
+            }
+          } catch {}
+        }
+      }
+
+      setMessages(prev => {
+        saveHistory(prev);
+        return prev;
+      });
     } catch (err: any) {
-      addMessage({ role: 'assistant', content: err.message || 'Gagal memproses pesan.' });
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { ...updated[updated.length - 1], content: err.message || 'Gagal memproses pesan.' };
+        saveHistory(updated);
+        return updated;
+      });
     } finally {
       setLoading(false);
     }
@@ -198,7 +389,7 @@ export default function AiChat() {
             )}
 
             {messages.map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                 <div
                   className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
                     msg.role === 'user'
@@ -207,6 +398,34 @@ export default function AiChat() {
                   }`}
                 >
                   {msg.content}
+                  {msg.query_data && (
+                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-600">
+                      <div className="flex items-center gap-2 mb-1">
+                        {msg.query_data.type === 'count' ? (
+                          <span className="text-lg font-bold text-blue-600 dark:text-blue-400">{msg.query_data.count}</span>
+                        ) : (
+                          <span className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                            {msg.query_data.count} data
+                          </span>
+                        )}
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{msg.query_data.modul}</span>
+                      </div>
+                      {msg.query_data.samples && msg.query_data.samples.length > 0 && (
+                        <div className="text-xs text-gray-600 dark:text-gray-400 space-y-0.5">
+                          {msg.query_data.samples.map((s, si) => (
+                            <div key={si} className="truncate">
+                              {Object.values(s).filter(v => v !== null && v !== undefined).join(' — ')}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {msg.content && (
+                  <div className={`text-[10px] mt-1.5 ${msg.role === 'user' ? 'text-white/80' : 'text-gray-500 dark:text-gray-400'}`}>
+                    {msg.timestamp}
+                  </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -248,6 +467,40 @@ export default function AiChat() {
                     ❌ Tidak
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Undo bar */}
+            {undoAvailable && (
+              <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700/50 rounded-xl p-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">
+                    Aksi berhasil. Batalkan dalam {undoCountdown}s
+                  </p>
+                  <button
+                    onClick={handleUndo}
+                    disabled={loading}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white transition-colors disabled:opacity-50"
+                  >
+                    ↩️ Undo
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Suggestions */}
+            {messages.length === 0 && !loading && suggestions.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-gray-400 dark:text-gray-500 font-medium px-1">Saran untuk Anda:</p>
+                {suggestions.map((s, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSuggestionClick(s)}
+                    className="w-full text-left bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/50 rounded-xl p-2.5 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                  >
+                    <span className="text-sm">{s.icon} {s.text}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>

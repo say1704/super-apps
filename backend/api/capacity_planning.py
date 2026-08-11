@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from collections import defaultdict
 import calendar
 import re
+import shlex
 import time
 import os
 import logging
@@ -118,22 +119,20 @@ def _build_command(cmd: str, username: str, password: str) -> tuple:
     """
     Build final command for ssh.ssh.exec_command().
     - root user → bash -c 'cmd' (unchanged existing behavior)
-    - non-root + ENABLE_SUDO_MODE → sudo -S -p '' sh -c 'cmd'
+    - non-root + ENABLE_SUDO_MODE → printf '<pw>\\n' | sudo -S -p '' sh -c 'cmd'
     - non-root + sudo OFF → bash -c 'cmd' (same as root)
 
-    The sudo branch runs the binary via `sh` and lets sudo's secure_path resolve
-    ls/cat/ip. This mirrors a manual `sudo ls …` (which works) and is portable across
-    hosts where the binary lives in /bin vs /usr/bin — the old hardcoded `/usr/bin/ls`
-    failed on hosts without usrmerge, surfacing as a misleading "No log files found".
-    Paths are pre-sanitized by _sanitize_path (no shell metacharacters), so single-quote
-    wrapping is safe.
+    The sudo password is PIPED to `sudo -S` via printf (not written to a PTY stdin).
+    Delivering the password through a PTY stdin returned empty on some hosts (line-discipline
+    echo/timing), which surfaced as a misleading "No log files found"; piping bypasses that.
+    Running the binary via `sh` lets sudo's secure_path resolve ls/cat/ip portably (/bin vs
+    /usr/bin). Paths are pre-sanitized by _sanitize_path; the password is shell-quoted.
     """
     is_root = (username == 'root')
     use_sudo = (not is_root) and ENABLE_SUDO_MODE
 
     if use_sudo:
-        # Password goes to stdin via ssh.exec_command; sudo -S -p '' reads it from stdin.
-        return (f"sudo -S -p '' sh -c '{cmd}'", True)
+        return (f"printf '%s\\n' {shlex.quote(password or '')} | sudo -S -p '' sh -c '{cmd}'", True)
 
     # Root or sudo OFF: bash -c for wildcard expansion (existing behavior)
     return (f"bash -c '{cmd}'", False)
@@ -142,7 +141,8 @@ def _build_command(cmd: str, username: str, password: str) -> tuple:
 def _exec_remote(ssh: SSHConnection, cmd: str, username: str, password: str, timeout: int = 30) -> tuple:
     """
     Execute command with sudo support. Returns (stdout, stderr, context).
-    For sudo mode: PTY allocated + password written to stdin.
+    For sudo mode: PTY allocated (for `requiretty` sudoers); password is piped inside the
+    command (printf | sudo -S), NOT written to stdin.
     """
     final_cmd, use_sudo = _build_command(cmd, username, password)
     is_root = (username == 'root')
@@ -152,11 +152,8 @@ def _exec_remote(ssh: SSHConnection, cmd: str, username: str, password: str, tim
     try:
         logger.debug(f"mode={mode}, cmd={final_cmd[:200]}")
         use_pty = use_sudo
+        # Password (sudo mode) is piped inside final_cmd via printf — do NOT write to stdin.
         stdin, stdout, stderr = ssh.ssh.exec_command(final_cmd, timeout=timeout, get_pty=use_pty)
-
-        if use_sudo:
-            stdin.write(password + '\n')
-            stdin.channel.shutdown_write()
 
         out = stdout.read().decode('utf-8', errors='ignore').strip()
         err = stderr.read().decode('utf-8', errors='ignore').strip()

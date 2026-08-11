@@ -16,7 +16,7 @@ import numpy as np
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger("model_server")
 logging.basicConfig(
@@ -27,25 +27,6 @@ logging.basicConfig(
 app = FastAPI(title="Super Apps Model Server")
 
 _BASE_DIR = Path(__file__).parent
-
-# ── Auth middleware ─────────────────────────────────────────────────────
-MODEL_SERVER_API_KEY = os.environ.get("MODEL_SERVER_API_KEY", "")
-
-@app.middleware("http")
-async def api_key_auth(request: Request, call_next):
-    """Require X-API-Key header for all endpoints except /health."""
-    if request.url.path == "/health":
-        return await call_next(request)
-    
-    if not MODEL_SERVER_API_KEY:
-        logger.warning("MODEL_SERVER_API_KEY not set - rejecting all requests")
-        return JSONResponse(status_code=503, content={"detail": "Model server not configured"})
-    
-    provided_key = request.headers.get("X-API-Key", "")
-    if provided_key != MODEL_SERVER_API_KEY:
-        return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
-    
-    return await call_next(request)
 
 # ── Default config (overridden by ai.yaml) ────────────────────────────
 MODEL_PATH = _BASE_DIR / "data" / "ai" / "qwen2.5-1.5b-instruct-q4_k_m.gguf"

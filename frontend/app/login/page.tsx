@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { useRouter } from 'next/navigation';
 import ThemeToggle from '@/components/ThemeToggle';
+import NetworkBackground from '@/components/NetworkBackground';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -12,12 +13,13 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [requiresOtp, setRequiresOtp] = useState(false);
-  const [otpCode, setOtpCode] = useState('');
+  const [otpDigits, setOtpDigits] = useState<string[]>(Array(6).fill(''));
   const [otpEmail, setOtpEmail] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
   const { login, verifyOtp } = useAuth();
   const router = useRouter();
+  const otpRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,30 +69,80 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await verifyOtp(username, otpCode);
+      await verifyOtp(username, otpDigits.join(''));
       router.push('/');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'OTP verification failed';
       setError(msg);
       if (msg.toLowerCase().includes('expired')) {
         setOtpSent(false);
-        setOtpCode('');
+        setOtpDigits(Array(6).fill(''));
       }
     } finally {
       setLoading(false);
     }
   };
 
+  const handleOtpChange = (val: string, i: number) => {
+    const digit = val.replace(/\D/g, '');
+    if (!digit) return;
+    const next = [...otpDigits];
+    next[i] = digit;
+    setOtpDigits(next);
+    if (i < 5) otpRefs.current[i + 1]?.focus();
+  };
+
+  const handleOtpKeyDown = (e: React.KeyboardEvent, i: number) => {
+    if (e.key === 'Backspace') {
+      if (!otpDigits[i] && i > 0) {
+        const prev = [...otpDigits];
+        prev[i - 1] = '';
+        setOtpDigits(prev);
+        otpRefs.current[i - 1]?.focus();
+      } else {
+        const prev = [...otpDigits];
+        prev[i] = '';
+        setOtpDigits(prev);
+      }
+    }
+  };
+
+  const handleOtpPaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const data = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
+    if (!data) return;
+    const next = [...otpDigits];
+    for (let i = 0; i < data.length; i++) {
+      next[i] = data[i];
+    }
+    setOtpDigits(next);
+    const focusIdx = Math.min(data.length, 5);
+    otpRefs.current[focusIdx]?.focus();
+  };
+
+  const resetOtp = () => {
+    setRequiresOtp(false);
+    setOtpDigits(Array(6).fill(''));
+    setOtpSent(false);
+    setError('');
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center relative bg-gray-100 dark:bg-[rgb(10,10,10)]">
-      <div className="fixed top-4 right-4">
+      <NetworkBackground />
+      <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-transparent to-cyan-500/5 dark:from-blue-500/10 dark:via-transparent dark:to-cyan-500/10 pointer-events-none" />
+
+      <div className="fixed top-4 right-4 z-10">
         <ThemeToggle />
       </div>
 
-      <div className="max-w-md w-full p-8 rounded-lg shadow-lg bg-white dark:bg-[rgb(31,41,58)]" suppressHydrationWarning>
+      <div
+        className="max-w-md w-full p-8 rounded-2xl shadow-2xl bg-white/70 dark:bg-gray-800/70 backdrop-blur-xl border border-white/20 dark:border-white/5 shadow-blue-900/10 dark:shadow-black/30 animate-fade-slide-up"
+        suppressHydrationWarning
+      >
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-[rgb(249,250,251)]">
-            🔒 Super Apps
+            Super Apps
           </h1>
           <p className="mt-2 text-gray-500 dark:text-[rgb(209,213,219)]">
             IT Management System
@@ -100,35 +152,47 @@ export default function LoginPage() {
         {!requiresOtp ? (
           <form onSubmit={handleSubmit} className="space-y-6">
             {error && (
-              <div className="p-3 rounded-lg text-sm bg-red-100 dark:bg-[rgb(127,29,29)] text-red-800 dark:text-[rgb(254,202,202)]">
+              <div className="p-3 rounded-xl text-sm bg-red-100 dark:bg-[rgb(127,29,29)] text-red-800 dark:text-[rgb(254,202,202)]">
                 {error}
               </div>
             )}
 
             <div>
-              <label className="block text-sm font-medium mb-1 text-gray-900 dark:text-[rgb(249,250,251)]">
+              <label className="block text-sm font-medium mb-1.5 text-gray-900 dark:text-[rgb(249,250,251)]">
                 Username
               </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2 border rounded-lg bg-white dark:bg-[rgb(55,65,81)] border-gray-300 dark:border-[rgb(75,85,99)] text-gray-900 dark:text-[rgb(249,250,251)]"
-                required
-                suppressHydrationWarning
-              />
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                  <svg className="w-5 h-5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 border rounded-xl transition-all duration-200 bg-white dark:bg-[rgb(55,65,81)] border-gray-200 dark:border-gray-600 text-gray-900 dark:text-[rgb(249,250,251)]"
+                  required
+                  suppressHydrationWarning
+                />
+              </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-1 text-gray-900 dark:text-[rgb(249,250,251)]">
+              <label className="block text-sm font-medium mb-1.5 text-gray-900 dark:text-[rgb(249,250,251)]">
                 Password
               </label>
               <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                  <svg className="w-5 h-5 text-gray-400 dark:text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-2 pr-12 border rounded-lg bg-white dark:bg-[rgb(55,65,81)] border-gray-300 dark:border-[rgb(75,85,99)] text-gray-900 dark:text-[rgb(249,250,251)]"
+                  className="w-full pl-10 pr-12 py-3 border rounded-xl transition-all duration-200 bg-white dark:bg-[rgb(55,65,81)] border-gray-200 dark:border-gray-600 text-gray-900 dark:text-[rgb(249,250,251)]"
                   required
                   suppressHydrationWarning
                 />
@@ -155,7 +219,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full px-4 py-2 rounded-lg transition-colors bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-70"
+              className="w-full px-4 py-3 rounded-xl transition-all duration-200 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-medium disabled:opacity-70 disabled:active:scale-100"
             >
               {loading ? 'Logging in...' : 'Login'}
             </button>
@@ -163,7 +227,7 @@ export default function LoginPage() {
         ) : (
           <form onSubmit={handleOtpSubmit} className="space-y-6">
             {error && (
-              <div className="p-3 rounded-lg text-sm bg-red-100 dark:bg-[rgb(127,29,29)] text-red-800 dark:text-[rgb(254,202,202)]">
+              <div className="p-3 rounded-xl text-sm bg-red-100 dark:bg-[rgb(127,29,29)] text-red-800 dark:text-[rgb(254,202,202)]">
                 {error}
               </div>
             )}
@@ -183,7 +247,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={handleSendOtp}
                 disabled={otpLoading}
-                className="w-full px-4 py-2 rounded-lg transition-colors bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-70"
+                className="w-full px-4 py-3 rounded-xl transition-all duration-200 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-medium disabled:opacity-70 disabled:active:scale-100"
               >
                 {otpLoading ? 'Sending...' : 'Send OTP Code'}
               </button>
@@ -192,26 +256,29 @@ export default function LoginPage() {
                 <div className="text-center text-sm text-gray-500 dark:text-gray-400">
                   ✅ OTP sent! Check your email.
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1 text-gray-900 dark:text-[rgb(249,250,251)]">
-                    OTP Code
-                  </label>
-                  <input
-                    type="text"
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    className="w-full px-4 py-2 border rounded-lg text-center text-2xl tracking-widest bg-white dark:bg-[rgb(55,65,81)] border-gray-300 dark:border-[rgb(75,85,99)] text-gray-900 dark:text-[rgb(249,250,251)]"
-                    placeholder="000000"
-                    maxLength={6}
-                    required
-                    autoFocus
-                  />
+
+                <div className="flex justify-center gap-2" onPaste={handleOtpPaste}>
+                  {Array.from({ length: 6 }, (_, i) => (
+                    <input
+                      key={i}
+                      ref={(el) => { otpRefs.current[i] = el; }}
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={1}
+                      value={otpDigits[i]}
+                      onChange={(e) => handleOtpChange(e.target.value, i)}
+                      onKeyDown={(e) => handleOtpKeyDown(e, i)}
+                      className="w-11 h-14 text-center text-xl font-semibold rounded-xl border transition-all duration-200 bg-white dark:bg-[rgb(55,65,81)] border-gray-200 dark:border-gray-600 text-gray-900 dark:text-[rgb(249,250,251)] focus:ring-2 focus:ring-blue-500/50 focus:border-transparent"
+                      autoFocus={i === 0}
+                      required
+                    />
+                  ))}
                 </div>
 
                 <button
                   type="submit"
-                  disabled={loading || otpCode.length !== 6}
-                  className="w-full px-4 py-2 rounded-lg transition-colors bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-70"
+                  disabled={loading || otpDigits.some((d) => !d)}
+                  className="w-full px-4 py-3 rounded-xl transition-all duration-200 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-medium disabled:opacity-70 disabled:active:scale-100"
                 >
                   {loading ? 'Verifying...' : 'Verify'}
                 </button>
@@ -220,7 +287,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={handleSendOtp}
                   disabled={otpLoading}
-                  className="w-full px-4 py-2 rounded-lg transition-colors bg-transparent text-gray-500 dark:text-[rgb(209,213,219)] border border-gray-300 dark:border-[rgb(55,65,81)] text-sm"
+                  className="w-full px-4 py-3 rounded-xl transition-all duration-200 bg-transparent text-gray-500 dark:text-[rgb(209,213,219)] border border-gray-200 dark:border-gray-600 text-sm hover:bg-gray-100 dark:hover:bg-white/5"
                 >
                   {otpLoading ? 'Resending...' : 'Resend Code'}
                 </button>
@@ -229,13 +296,8 @@ export default function LoginPage() {
 
             <button
               type="button"
-              onClick={() => {
-                setRequiresOtp(false);
-                setOtpCode('');
-                setOtpSent(false);
-                setError('');
-              }}
-              className="w-full px-4 py-2 rounded-lg transition-colors bg-transparent text-gray-500 dark:text-[rgb(209,213,219)] border border-gray-300 dark:border-[rgb(55,65,81)]"
+              onClick={resetOtp}
+              className="w-full px-4 py-3 rounded-xl transition-all duration-200 bg-transparent text-gray-500 dark:text-[rgb(209,213,219)] border border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-white/5"
             >
               Back to Login
             </button>
@@ -243,11 +305,11 @@ export default function LoginPage() {
         )}
 
         {!requiresOtp && (
-          <div className="mt-4 text-center space-y-2">
-            <a href="/reset-password" className="text-sm font-medium hover:underline block text-gray-500 dark:text-[rgb(209,213,219)]">
+          <div className="mt-6 text-center space-y-2">
+            <a href="/reset-password" className="text-sm font-medium hover:underline block text-gray-500 dark:text-[rgb(209,213,219)] hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-200">
               Forgot password?
             </a>
-            <a href="/register" className="text-sm font-medium hover:underline block text-gray-500 dark:text-[rgb(209,213,219)]">
+            <a href="/register" className="text-sm font-medium hover:underline block text-gray-500 dark:text-[rgb(209,213,219)] hover:text-blue-600 dark:hover:text-blue-400 transition-colors duration-200">
               Don&apos;t have an account? Register
             </a>
           </div>
@@ -255,8 +317,11 @@ export default function LoginPage() {
       </div>
 
       <div className="fixed bottom-4 left-0 right-0 text-center">
-        <p className="text-sm text-gray-400 dark:text-gray-600">
-          © 2026 Super Apps — Built by Soni
+        <p className="text-base text-gray-400 dark:text-gray-600">
+          © 2026 Super Apps — Built with ❤️ by{' '}
+          <span className="font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-cyan-400 font-mono tracking-wider">
+            [ Soni ]
+          </span>
         </p>
       </div>
     </div>

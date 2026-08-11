@@ -11,8 +11,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from utils.input_sanitizer import escape_like
-
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -349,7 +347,7 @@ def fetch_data(intent: dict, db: Session, user_id: int,
             elif op == "neq":
                 filter_conditions.append(col != val)
             elif op == "like":
-                filter_conditions.append(col.ilike(f"%{escape_like(str(val))}%", escape="\\"))
+                filter_conditions.append(col.ilike(f"%{val}%"))
             elif op == "gt":
                 filter_conditions.append(col > val)
             elif op == "gte":

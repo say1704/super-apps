@@ -269,10 +269,6 @@ def apply_correction(db: Session, action: str, table: str, params: dict) -> Dict
                 return {"error": "Parameter tidak lengkap"}
             if table not in _ALLOWED_TABLES or fk not in _ALLOWED_COLUMNS:
                 return {"error": "Table atau kolom tidak diizinkan"}
-            if parent_table not in _ALLOWED_TABLES:
-                return {"error": "Parent table tidak diizinkan"}
-            if parent_pk not in _ALLOWED_COLUMNS:
-                return {"error": "Parent primary key tidak diizinkan"}
             sql = text(f"""
                 DELETE FROM {table} WHERE {fk} IS NOT NULL
                 AND {fk} NOT IN (SELECT {parent_pk} FROM {parent_table})

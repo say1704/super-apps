@@ -50,10 +50,8 @@ def _embed_batch(texts: List[str]):
     import numpy as np
     import httpx
     url = _resolve_embedder_url()
-    api_key = os.environ.get("MODEL_SERVER_API_KEY", "")
-    headers = {"X-API-Key": api_key} if api_key else {}
     try:
-        resp = httpx.post(url, json={"input": texts}, timeout=30.0, verify=False, headers=headers)
+        resp = httpx.post(url, json={"input": texts}, timeout=30.0, verify=False)
         resp.raise_for_status()
         data = resp.json()
         return np.array([item["embedding"] for item in data["data"]])
