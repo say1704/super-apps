@@ -17,6 +17,7 @@ import json
 from database import get_db
 from models import AssetCommon, AssetUsers, AssetHardware, AssetSoftware, AssetVirtualInfrastructure, AssetInformation
 from models import User, AssetAuditLog, ActivityLog
+from models import IRMCCheck, CapacityMetrics, DiskPartition, BackupHistory, SSHLoginLog
 from utils.password_encrypt import encrypt_password, decrypt_password
 from utils.asset_code_generator import get_next_asset_code
 from utils.rate_limiter import limiter
@@ -566,6 +567,102 @@ async def export_assets_data(
         "total": total,
         "exported": len(records),
     }
+
+
+@router.get("/import-candidates")
+async def get_import_candidates(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Candidate assets inferred from server sources (iRMC, Backup, SAR, SSH)."""
+    distinct_names = {
+        "irmc": [r[0] for r in db.query(IRMCCheck.server_name).distinct().all() if r[0]],
+        "backup": [r[0] for r in db.query(BackupHistory.server_name).distinct().all() if r[0]],
+        "sar": [r[0] for r in db.query(CapacityMetrics.hostname).distinct().all() if r[0]],
+        "ssh": [r[0] for r in db.query(SSHLoginLog.hostname).distinct().all() if r[0]],
+    }
+
+    existing = db.query(AssetCommon.category, AssetCommon.name).filter(
+        AssetCommon.deleted_at.is_(None)
+    ).all()
+    existing_keys = {(cat, _normalize_name(name)) for cat, name in existing}
+
+    latest_rows = db.query(CapacityMetrics).filter(
+        CapacityMetrics.id.in_(
+            db.query(func.max(CapacityMetrics.id)).group_by(CapacityMetrics.hostname)
+        )
+    ).all()
+    metrics_by_host = {}
+    for m in latest_rows:
+        metrics_by_host[m.hostname] = m
+
+    parts = db.query(DiskPartition.hostname, DiskPartition.mount_point, DiskPartition.size).all()
+    part_by_host = {}
+    for host, mp, size in parts:
+        if size:
+            part_by_host.setdefault(host, {})[mp] = size
+
+    groups = []
+    new_count = 0
+    existing_count = 0
+    for source in ("irmc", "backup", "sar", "ssh"):
+        category = SOURCE_CATEGORY[source]
+        sub_category = SOURCE_SUB_CATEGORY[source]
+        items = []
+        for name in distinct_names[source]:
+            if not name or name.strip() == "-":
+                continue
+            norm = _normalize_name(name)
+            exists = (category, norm) in existing_keys
+            attributes = {}
+            note = SOURCE_LABEL[source]
+            metric = (metrics_by_host.get(name) if source == "sar" else None)
+            if metric:
+                sysinfo = metric.system_info or {}
+                attributes = {
+                    "ip_address": metric.ip_address or metric.local_ip,
+                    "os": sysinfo.get("os"),
+                    "cpu": sysinfo.get("cpu"),
+                    "ram": sysinfo.get("ram"),
+                    "hypervisor": sysinfo.get("hypervisor"),
+                }
+                details = [SOURCE_LABEL[source]]
+                if sysinfo.get("system"):
+                    details.append("System: " + sysinfo["system"])
+                if sysinfo.get("serial"):
+                    details.append("Serial: " + sysinfo["serial"])
+                if metric.public_ip:
+                    details.append("Public IP: " + metric.public_ip)
+                note = "; ".join(details)
+            elif source in ("backup", "ssh"):
+                if metrics_by_host.get(name):
+                    attributes["ip_address"] = metrics_by_host[name].ip_address or metrics_by_host[name].local_ip
+            if part_by_host.get(name):
+                storage = ", ".join(f"{mp}: {size}" for mp, size in part_by_host[name].items())
+                attributes["storage"] = storage
+            items.append({
+                "name": name,
+                "source": source,
+                "source_label": SOURCE_LABEL[source],
+                "category": category,
+                "sub_category": sub_category,
+                "exists": exists,
+                "attributes": {k: v for k, v in attributes.items() if v},
+                "keterangan": note,
+            })
+            if exists:
+                existing_count += 1
+            else:
+                new_count += 1
+        if items:
+            groups.append({
+                "source": source,
+                "source_label": SOURCE_LABEL[source],
+                "category": category,
+                "sub_category": sub_category,
+                "items": items,
+            })
+    return {"groups": groups, "new_count": new_count, "existing_count": existing_count}
 
 
 @router.get("/{asset_id}", response_model=AssetListResponse)
@@ -1128,3 +1225,134 @@ async def bulk_update_classification(
     db.commit()
     log_activity(db, current_user, "UPDATE", "assets", f"Bulk updated {updated_count} assets classification to {new_classification}")
     return {"message": f"Updated {updated_count} assets classification", "count": updated_count}
+
+
+# ==================== IMPORT FROM SERVER SOURCES ====================
+# Inferred asset entries from iRMC (hardware) and Backup/SAR/SSH (virtual infra).
+# Dedupe per (category, name); "boleh 1 hardware + 1 virtual".
+SOURCE_CATEGORY = {
+    "irmc": "hardware",
+    "backup": "virtual-infrastructure",
+    "sar": "virtual-infrastructure",
+    "ssh": "virtual-infrastructure",
+}
+SOURCE_SUB_CATEGORY = {
+    "irmc": "server_rack",
+    "backup": "virtual_machine",
+    "sar": "virtual_machine",
+    "ssh": "virtual_machine",
+}
+SOURCE_LABEL = {
+    "irmc": "iRMC Check",
+    "backup": "Backup Check",
+    "sar": "SAR / Capacity Monitoring",
+    "ssh": "SSH Report",
+}
+
+
+def _normalize_name(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+@router.post("/import-from-servers")
+async def import_from_servers(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create assets from selected candidates (name + category only, server-side mapping)."""
+    body = await request.json()
+    selections = body.get("selections") or []
+    if not isinstance(selections, list) or len(selections) > 500:
+        raise HTTPException(status_code=400, detail="selections must be a list of at most 500 items")
+
+    metadata = get_metadata_with_fallback(db, current_user)
+    valid_classifications = metadata["classification_levels"]
+    existing = db.query(AssetCommon.category, AssetCommon.name).filter(
+        AssetCommon.deleted_at.is_(None)
+    ).all()
+    existing_keys = {(cat, _normalize_name(name)) for cat, name in existing}
+
+    imported = []
+    skipped = []
+    for sel in selections:
+        name = (sel.get("name") or "").strip()
+        category = (sel.get("category") or "").strip()
+        if not name or category not in SOURCE_CATEGORY.values():
+            skipped.append({"name": name, "category": category, "reason": "invalid selection"})
+            continue
+        norm = _normalize_name(name)
+        if (category, norm) in existing_keys:
+            skipped.append({"name": name, "category": category, "reason": "already exists"})
+            continue
+
+        sub_category = "server_rack" if category == "hardware" else "virtual_machine"
+        classification = get_auto_classification(category, sub_category) or "internal"
+        if classification not in valid_classifications:
+            classification = "internal"
+
+        attributes = {}
+        note = None
+        if category == "virtual-infrastructure":
+            metric = db.query(CapacityMetrics).filter(
+                CapacityMetrics.hostname == name
+            ).order_by(CapacityMetrics.tanggal.desc(), CapacityMetrics.id.desc()).first()
+            if metric:
+                sysinfo = metric.system_info or {}
+                attributes = {
+                    "ip_address": metric.ip_address or metric.local_ip,
+                    "os": sysinfo.get("os"),
+                    "cpu": sysinfo.get("cpu"),
+                    "ram": sysinfo.get("ram"),
+                    "hypervisor": sysinfo.get("hypervisor"),
+                }
+                details = ["SAR/Backup/SSH"]
+                if sysinfo.get("system"):
+                    details.append("System: " + sysinfo["system"])
+                if sysinfo.get("serial"):
+                    details.append("Serial: " + sysinfo["serial"])
+                if metric.public_ip:
+                    details.append("Public IP: " + metric.public_ip)
+                note = "; ".join(details)
+            parts = db.query(DiskPartition).filter(
+                DiskPartition.hostname == name,
+                DiskPartition.size.isnot(None)
+            ).order_by(DiskPartition.tanggal.desc()).all()
+            if parts:
+                sizes = {p.mount_point: p.size for p in parts}
+                attributes["storage"] = ", ".join(f"{mp}: {size}" for mp, size in sizes.items())
+            if not note:
+                note = "Backup/SSH"
+        else:
+            note = "Sumber: iRMC Check"
+        attributes = {k: v for k, v in attributes.items() if v}
+        if note:
+            attributes["keterangan"] = note
+
+        asset_code = get_next_asset_code(db)
+        asset = AssetCommon(
+            asset_code=asset_code,
+            name=name,
+            category=category,
+            sub_category=sub_category,
+            classification=classification,
+            status="active",
+            created_by=current_user.username if current_user else "system",
+            owner_role=current_user.role if current_user else None,
+        )
+        db.add(asset)
+        db.flush()
+        create_extension_record(category, asset.id, attributes, db)
+        log_create(
+            db=db,
+            user=current_user,
+            module='assets',
+            item_name=f'{category} - {name}',
+            item_id=asset.id,
+            details={'asset_code': asset_code, 'sub_category': sub_category, 'classification': classification},
+        )
+        existing_keys.add((category, norm))
+        imported.append({"name": name, "category": category, "asset_code": asset_code})
+
+    db.commit()
+    return {"message": f"{len(imported)} asset imported", "imported": imported, "skipped": skipped}

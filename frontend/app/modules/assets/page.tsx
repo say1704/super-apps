@@ -11,6 +11,7 @@ import AssetFilters from './components/asset-filters';
 import AssetTable from './components/asset-table';
 import AssetForm from './components/asset-form';
 import AssetDetailModal from './components/asset-detail-modal';
+import ImportServersModal from './components/import-servers-modal';
 import AssetMetadataTab from '../settings/components/asset-metadata-tab';
 
 interface Asset {
@@ -76,6 +77,7 @@ export default function AssetsModule() {
   const [submitting, setSubmitting] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ open: boolean; id: number | null }>({ open: false, id: null });
   const [showMetadataManager, setShowMetadataManager] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [exportData, setExportData] = useState<any[]>([]);
 
   const fetchExportData = useCallback(async () => {
@@ -332,6 +334,12 @@ export default function AssetsModule() {
             Manage Metadata
           </button>
           <button
+            onClick={() => setShowImportModal(true)}
+            className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors font-medium"
+          >
+            ⬇️ Impor dari Server
+          </button>
+          <button
             onClick={() => { setShowForm(true); setEditingAsset(null); }}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
           >
@@ -405,6 +413,14 @@ export default function AssetsModule() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Import dari Server Modal */}
+      {showImportModal && (
+        <ImportServersModal
+          onClose={() => setShowImportModal(false)}
+          onImported={() => fetchData()}
+        />
       )}
 
       {/* Table */}
