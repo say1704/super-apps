@@ -113,26 +113,41 @@ def _capacity_to_dict(record: CapacityMetrics) -> dict:
     }
 
 
-# ==================== SUDO WRAPPER (scoped to this module only, experimental) ====================
+# ==================== SUDO WRAPPER (scoped to this module only) ====================
+
+# Direct binary paths for the sudo branch. Sudoers on the target hosts whitelists specific
+# binaries (e.g. /usr/bin/ls, /usr/bin/cat) — NOT a shell — so we must invoke the binary
+# directly, never via `sh -c` (which sudo refuses: "user … is not allowed to execute
+# '/usr/bin/sh -c …'").
+_CMD_MAP = {
+    'ls ': '/usr/bin/ls ',
+    'cat ': '/usr/bin/cat ',
+    'ip ': '/usr/sbin/ip ',
+}
+
 
 def _build_command(cmd: str, username: str, password: str) -> tuple:
     """
     Build final command for ssh.ssh.exec_command().
     - root user → bash -c 'cmd' (unchanged existing behavior)
-    - non-root + ENABLE_SUDO_MODE → printf '<pw>\\n' | sudo -S -p '' sh -c 'cmd'
+    - non-root + ENABLE_SUDO_MODE → printf '<pw>\\n' | sudo -S -p '' <absolute-binary> args
     - non-root + sudo OFF → bash -c 'cmd' (same as root)
 
-    The sudo password is PIPED to `sudo -S` via printf (not written to a PTY stdin).
-    Delivering the password through a PTY stdin returned empty on some hosts (line-discipline
-    echo/timing), which surfaced as a misleading "No log files found"; piping bypasses that.
-    Running the binary via `sh` lets sudo's secure_path resolve ls/cat/ip portably (/bin vs
-    /usr/bin). Paths are pre-sanitized by _sanitize_path; the password is shell-quoted.
+    The sudo password is PIPED to `sudo -S` via printf (not written to a PTY stdin) — a PTY
+    stdin returned empty on some hosts (line-discipline timing), misreported as "No log files
+    found". The binary is resolved to its absolute path via _CMD_MAP because sudoers whitelists
+    the binary directly (no shell). Paths are pre-sanitized; the password is shell-quoted.
     """
     is_root = (username == 'root')
     use_sudo = (not is_root) and ENABLE_SUDO_MODE
 
     if use_sudo:
-        return (f"printf '%s\\n' {shlex.quote(password or '')} | sudo -S -p '' sh -c '{cmd}'", True)
+        resolved = cmd
+        for prefix, full in _CMD_MAP.items():
+            if cmd.startswith(prefix):
+                resolved = full + cmd[len(prefix):]
+                break
+        return (f"printf '%s\\n' {shlex.quote(password or '')} | sudo -S -p '' {resolved}", True)
 
     # Root or sudo OFF: bash -c for wildcard expansion (existing behavior)
     return (f"bash -c '{cmd}'", False)
