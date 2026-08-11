@@ -9,6 +9,7 @@ import {
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 import autoTable from 'jspdf-autotable';
+import { monthFull, isRunningMonth, slaVerdict, SLA_NOTE } from '@/lib/sla-status';
 
 // Helper for CSV Export
 const downloadCSV = (data: any[], filename: string) => {
@@ -122,10 +123,20 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
   const [pagination, setPagination] = useState<any>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [serverInfo, setServerInfo] = useState<any>(null);
+  const [sla, setSla] = useState<{ month?: string; days_of_data?: number; days_in_month?: number; days_monitored?: number; days_no_data?: number; coverage_pct?: number } | null>(null);
   const [interfaces, setInterfaces] = useState<any[]>([]);
   const [infoDate, setInfoDate] = useState<string | null>(null);
+  const [serverSLARows, setServerSLARows] = useState<any[]>([]);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const slaRange = () => {
+    const to = new Date().toISOString().split('T')[0];
+    const from = new Date(Date.now() - 364 * 86400000).toISOString().split('T')[0];
+    return { from, to };
+  };
+
+  const mapSlaStatus = (s: string) => (s === 'OK' ? 'ok' : s === 'WARNING' ? 'warning' : 'critical');
 
   const toggleRowExpand = (idx: number) => {
     setExpandedRows(prev => {
@@ -160,8 +171,11 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
       } else if (activeTab === 'info') {
         const result = await apiRequest(`/api/capacity-planning/servers/${hostname}/interfaces`);
         setServerInfo(result.server_info);
+        setSla(result.sla || null);
         setInterfaces(result.interfaces || []);
         setInfoDate(result.latest_date);
+        const slaRes = await apiRequest(`/api/v1/capacity-reports/sla-export?from_date=${slaRange().from}&to_date=${slaRange().to}`).catch(() => ({ rows: [] }));
+        setServerSLARows((slaRes.rows || []).filter((r: any) => r.hostname === hostname));
       } else {
         // Projection tab
         try {
@@ -193,7 +207,7 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
       const csvData = data.map((r: any) => ({
         Tanggal: r.tanggal,
         Status: r.status,
-        'CPU Peak (%)': r.cpu_peak,
+        'CPU Peak (%)': r.cpu_peak_max ?? r.cpu_peak,
         'CPU Peak Time': r.cpu_peak_time || '-',
         'CPU User Avg (%)': r.cpu_user_avg,
         'RAM Peak (%)': r.ram_peak,
@@ -220,35 +234,76 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
       const doc = new jsPDF({ orientation: 'landscape' });
       const pageWidth = doc.internal.pageSize.getWidth();
 
+      // Unified typography scale for the PDF report
+      const F: Record<string, number> = {
+        title: 18,
+        subtitle: 10,
+        meta: 9,
+        info: 9.5,
+        section: 11,
+        cardLabel: 8,
+        cardValue: 12,
+        table: 7.5,
+        note: 8,
+        recTitle: 9,
+        footer: 7,
+      };
+
+      let exportRecords = records;
+      if (exportRecords.length === 0) {
+        const historyRes = await apiRequest(`/api/capacity-planning/servers/${hostname}/history?page=1&page_size=30`);
+        exportRecords = historyRes.data || [];
+      }
+      const projRes = await apiRequest(`/api/capacity-planning/servers/${hostname}/projection`).catch(() => ({ projections: [] }));
+      const exportProjections: ProjectionData[] = projRes.projections || [];
+      const infoRes = await apiRequest(`/api/capacity-planning/servers/${hostname}/interfaces`).catch(() => null);
+      let exportSLARows = serverSLARows;
+      if (exportSLARows.length === 0) {
+        const slaRes = await apiRequest(`/api/v1/capacity-reports/sla-export?from_date=${slaRange().from}&to_date=${slaRange().to}`).catch(() => ({ rows: [] }));
+        exportSLARows = (slaRes.rows || []).filter((r: any) => r.hostname === hostname);
+      }
+
       // ── HEADER ──────────────────────────────────────────
       doc.setFillColor(36, 72, 141); // Navy blue
       doc.rect(0, 0, pageWidth, 32, 'F');
       doc.setTextColor(255, 255, 255);
-      doc.setFontSize(20);
+      doc.setFontSize(F.title);
       doc.text('LAPORAN KAPASITAS SERVER', 14, 16);
-      doc.setFontSize(11);
+      doc.setFontSize(F.subtitle);
       doc.text(`${hostname}`, 14, 26);
 
-      doc.setFontSize(9);
+      doc.setFontSize(F.meta);
       doc.text(`Dicetak: ${new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}`, pageWidth - 14, 16, { align: 'right' });
       doc.text('Sistem Manajemen TI Terintegrasi — Server Capacity Monitoring (SAR)', pageWidth - 14, 26, { align: 'right' });
 
+      // ── SERVER INFO LINE ────────────────────────────────
+      const infoSrv = infoRes?.server_info || {};
+      const infoSla = infoRes?.sla || {};
+      if (infoSrv.uptime || infoSrv.cpu) {
+        doc.setTextColor(60, 60, 60);
+        doc.setFontSize(F.info);
+        const cleanInfo = (s: string) => String(s || '-').replace(/[^\x20-\x7E]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+        const slaVal = infoSla.coverage_pct != null ? `${infoSla.coverage_pct.toFixed(2)}% (${infoSla.days_of_data}/${infoSla.days_monitored ?? infoSla.days_in_month} hari)` : '-';
+        doc.text(`OS: ${cleanInfo(infoSrv.os)} | Uptime (saat ini): ${cleanInfo(infoSrv.uptime || 'N/A')} | SLA ${infoSla.month || ''}: ${slaVal}`, 14, 36);
+        doc.setFontSize(F.section);
+      }
+
       // ── SUMMARY CARDS ──────────────────────────────────
-      let y = 40;
-      if (records.length > 0) {
+      let y = (infoSrv.uptime || infoSrv.cpu) ? 44 : 40;
+      if (exportRecords.length > 0) {
         doc.setTextColor(0);
-        doc.setFontSize(12);
+        doc.setFontSize(F.section);
         doc.text('Ringkasan', 14, y);
         y += 2;
 
-        const avgCpu = (records.reduce((a, b) => a + b.cpu_peak, 0) / records.length).toFixed(1);
-        const avgRam = (records.reduce((a, b) => a + b.ram_peak, 0) / records.length).toFixed(1);
-        const avgDisk = (records.reduce((a, b) => a + b.disk_root_pct, 0) / records.length).toFixed(1);
-        const minRam = Math.min(...records.map(r => r.ram_peak));
-        const maxRam = Math.max(...records.map(r => r.ram_peak));
-        const minCpu = Math.min(...records.map(r => r.cpu_peak));
-        const maxCpu = Math.max(...records.map(r => r.cpu_peak));
-        const latest = records[0];
+        const avgCpu = (exportRecords.reduce((a, b) => a + b.cpu_peak, 0) / exportRecords.length).toFixed(2);
+        const avgRam = (exportRecords.reduce((a, b) => a + b.ram_peak, 0) / exportRecords.length).toFixed(2);
+        const avgDisk = (exportRecords.reduce((a, b) => a + b.disk_root_pct, 0) / exportRecords.length).toFixed(2);
+        const minRam = Math.min(...exportRecords.map(r => r.ram_peak)).toFixed(2);
+        const maxRam = Math.max(...exportRecords.map(r => r.ram_peak)).toFixed(2);
+        const minCpu = Math.min(...exportRecords.map(r => r.cpu_peak)).toFixed(2);
+        const maxCpu = Math.max(...exportRecords.map(r => r.cpu_peak)).toFixed(2);
+        const latest = exportRecords[0];
 
         const colWidth = (pageWidth - 28) / 3;
         const cardHeight = 22;
@@ -258,11 +313,11 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
           doc.roundedRect(x, yy, colWidth, cardHeight, 2, 2, 'F');
           doc.setDrawColor(200);
           doc.roundedRect(x, yy, colWidth, cardHeight, 2, 2, 'S');
-          doc.setFontSize(8);
+          doc.setFontSize(F.cardLabel);
           doc.setTextColor(120);
           doc.setFont('helvetica', 'normal');
           doc.text(label, x + 4, yy + 9);
-          doc.setFontSize(14);
+          doc.setFontSize(F.cardValue);
           doc.setTextColor(36, 72, 141);
           doc.setFont('helvetica', 'bold');
           doc.text(value, x + 4, yy + 18);
@@ -270,7 +325,7 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         };
 
         const diskLabel = secondaryDiskLabel || '-';
-        const diskAvg2 = secondaryDiskLabel ? (records.reduce((a, b) => a + b.disk_data_pct, 0) / records.length).toFixed(1) : 'N/A';
+        const diskAvg2 = secondaryDiskLabel ? (exportRecords.reduce((a, b) => a + b.disk_data_pct, 0) / exportRecords.length).toFixed(2) : 'N/A';
 
         makeCard('CPU Peak (Avg)', `${avgCpu}% (Min: ${minCpu}%, Max: ${maxCpu}%)`, 14, y + 4);
         makeCard('RAM Peak (Avg)', `${avgRam}% (Min: ${minRam}%, Max: ${maxRam}%)`, 14 + colWidth + 6, y + 4);
@@ -279,7 +334,7 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         y += cardHeight + 8;
 
         if (latest.peak_description) {
-          doc.setFontSize(8);
+          doc.setFontSize(F.note);
           doc.setTextColor(60, 60, 120);
           doc.setFont('helvetica', 'italic');
           const descLines = doc.splitTextToSize(`Peak 24 Jam: ${latest.peak_description}`, pageWidth - 28);
@@ -294,8 +349,8 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
       }
 
       // ── TABLE ──────────────────────────────────────────
-      if (records.length > 0) {
-        const hasSecDisk = secondaryDiskLabel && records.some(r => r.disk_data_pct > 0);
+      if (exportRecords.length > 0) {
+        const hasSecDisk = secondaryDiskLabel && exportRecords.some(r => r.disk_data_pct > 0);
         const headers = [
           'Tanggal',
           'Status',
@@ -309,19 +364,19 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         ];
         if (hasSecDisk) headers.push(`Disk ${secondaryDiskLabel}`);
 
-        const body = records.map(r => {
+        const body = exportRecords.map(r => {
           const row: (string | number)[] = [
             r.tanggal,
             r.status.toUpperCase(),
-            `${r.cpu_peak}%`,
+            `${(r.cpu_peak_max ?? r.cpu_peak).toFixed(2)}%`,
             r.cpu_peak_time || '-',
-            r.cpu_user_avg?.toFixed(1) ?? '-',
-            `${r.ram_peak}%`,
+            r.cpu_user_avg?.toFixed(2) ?? '-',
+            `${r.ram_peak.toFixed(2)}%`,
             r.ram_peak_time || '-',
-            `${r.ram_avg.toFixed(1)}%`,
-            `${r.disk_root_pct}%`,
+            `${r.ram_avg.toFixed(2)}%`,
+            `${r.disk_root_pct.toFixed(2)}%`,
           ];
-          if (hasSecDisk) row.push(`${r.disk_data_pct}%`);
+          if (hasSecDisk) row.push(`${r.disk_data_pct.toFixed(2)}%`);
           return row;
         });
 
@@ -331,7 +386,7 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
           body,
           theme: 'grid',
           styles: {
-            fontSize: 7.5,
+            fontSize: F.table,
             cellPadding: 2,
             valign: 'middle',
           },
@@ -393,11 +448,195 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         y = (doc as any).lastAutoTable.finalY + 14;
       }
 
+      // ── PROYEKSI KAPASITAS ─────────────────────────────
+      const pageHeight = doc.internal.pageSize.getHeight();
+
+      // ── SLA PER BULAN ──────────────────────────────────
+      if (exportSLARows.length > 0) {
+        if (y > pageHeight - 60) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.setFontSize(F.section);
+        doc.setTextColor(0);
+        doc.setFont('helvetica', 'bold');
+        doc.text('SLA PER BULAN', 14, y);
+        y += 7;
+        const slaHeaders = ['Bulan', 'Hari Dipantau', 'Hari Data', 'Tanpa Data', 'SLA %', 'Status', 'Keterangan'];
+        const slaBody = exportSLARows.map((r: any) => {
+          const hasSla = r.coverage_pct != null;
+          return [
+            `${monthFull(r.year_month)}${isRunningMonth(r.year_month) ? ' (berjalan)' : ''}`,
+            hasSla ? (r.days_monitored ?? r.days_in_month) : '—',
+            hasSla ? r.days_of_data : '—',
+            hasSla ? (r.days_no_data ?? r.days_down) : '—',
+            hasSla ? `${r.coverage_pct.toFixed(2)}%` : '—',
+            r.status || 'OK',
+            slaVerdict(r.status),
+          ];
+        });
+        autoTable(doc, {
+          startY: y,
+          head: [slaHeaders],
+          body: slaBody,
+          theme: 'grid',
+          styles: { fontSize: F.table, cellPadding: 2, valign: 'middle' },
+          headStyles: { fillColor: [36, 72, 141], textColor: 255, fontStyle: 'bold', halign: 'center' },
+          alternateRowStyles: { fillColor: [245, 245, 250] },
+          columnStyles: {
+            0: { halign: 'center', cellWidth: 48 },
+            1: { halign: 'center' },
+            2: { halign: 'center' },
+            3: { halign: 'center' },
+            4: { halign: 'center', fontStyle: 'bold' },
+            5: { halign: 'center', fontStyle: 'bold' },
+            6: { halign: 'left' },
+          },
+          didParseCell: function (data) {
+            if (data.section !== 'body') return;
+            if (data.column.index === 4) {
+              const v = parseFloat(String(data.cell.raw));
+              if (!isNaN(v)) {
+                if (v < 95) {
+                  (data.cell as any).styles.textColor = [220, 38, 38];
+                  (data.cell as any).styles.fontStyle = 'bold';
+                } else if (v < 99) {
+                  (data.cell as any).styles.textColor = [202, 138, 4];
+                } else {
+                  (data.cell as any).styles.textColor = [34, 139, 34];
+                }
+              }
+            }
+            if (data.column.index === 5) {
+              const s = String(data.cell.raw);
+              if (s === 'KRITIS') {
+                (data.cell as any).styles.textColor = [220, 38, 38];
+                (data.cell as any).styles.fillColor = [254, 226, 226];
+              } else if (s === 'WARNING') {
+                (data.cell as any).styles.textColor = [202, 138, 4];
+                (data.cell as any).styles.fillColor = [254, 249, 195];
+              } else {
+                (data.cell as any).styles.textColor = [34, 139, 34];
+                (data.cell as any).styles.fillColor = [209, 250, 209];
+              }
+            }
+          },
+        });
+        y = (doc as any).lastAutoTable.finalY + 14;
+        doc.setFontSize(7);
+        doc.setTextColor(120);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Catatan: ' + SLA_NOTE + ' Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelum tanggal itu = N/A.', 14, y - 5);
+      }
+
+      const pdfClean = (s: string) => (s || '').replace(/[^\x20-\x7E]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+      if (exportProjections.length > 0) {
+        if (y > pageHeight - 60) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.setFontSize(F.section);
+        doc.setTextColor(0);
+        doc.setFont('helvetica', 'bold');
+        doc.text('PROYEKSI KAPASITAS (Linear Regression)', 14, y);
+        y += 7;
+        exportProjections.forEach((proj) => {
+          const isCpu = proj.type === 'cpu';
+          const isRam = proj.type === 'ram';
+          const title = isCpu ? 'CPU Usage'
+            : isRam ? 'RAM Usage'
+            : (proj.partition === '/' ? 'Root System (/)' : proj.partition);
+          const isProjected = proj.status === 'projected';
+          const urgency = proj.urgency === 'critical' || proj.urgency === 'warning' ? proj.urgency : 'safe';
+          const urgencyLabel = urgency === 'critical' ? 'KRITIS' : urgency === 'warning' ? 'WASPADA' : 'AMAN';
+          const statLabel = isProjected ? 'PROYEKSI' : 'STABIL/MENURUN';
+          const urgencyColor: [number, number, number] = urgency === 'critical' ? [220, 38, 38] : urgency === 'warning' ? [202, 138, 4] : [34, 139, 34];
+          const trendLabel = proj.trend === 'increasing' ? 'Naik' : proj.trend === 'decreasing' ? 'Turun' : 'Stabil';
+          const confLabel = proj.confidence === 'high' ? 'Tinggi'
+            : proj.confidence === 'medium' ? 'Sedang'
+            : proj.confidence === 'low' ? 'Rendah' : 'Sangat rendah';
+          const thresholdDate = isProjected && proj.threshold_date
+            ? new Date(proj.threshold_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+          const daysToLimit = isProjected && proj.days_to_threshold != null ? `${proj.days_to_threshold} hari` : '—';
+
+          autoTable(doc, {
+            startY: y,
+            head: [[{ content: `${title} — Status: ${statLabel} | Urgensi: ${urgencyLabel}`, colSpan: 2, styles: { halign: 'center' } }]],
+            body: [
+              ['Penggunaan Saat Ini', `${proj.current_use_pct.toFixed(2)}%`],
+              ['Ambang Batas', `${proj.threshold.toFixed(2)}%`],
+              ['Tren', trendLabel],
+              ['Slope per Hari', `${proj.slope_per_day.toFixed(4)}`],
+              ['Koefisien R²', proj.r_squared.toFixed(4)],
+              ['Estimasi Capai Ambang', isProjected ? `${daysToLimit} (${thresholdDate})` : 'Belum diproyeksikan'],
+              ['Prediksi 1 Bulan', `${proj.prediction_1m.toFixed(2)}%`],
+              ['Prediksi 3 Bulan', `${proj.prediction_3m.toFixed(2)}%`],
+              ['Prediksi 6 Bulan', `${proj.prediction_6m.toFixed(2)}%`],
+              ['Prediksi 12 Bulan', `${proj.prediction_12m.toFixed(2)}%`],
+              ['Confidence', confLabel],
+              ['Data Points', `${proj.data_points} hari`],
+              ['Rentang Data', proj.data_range ? `${proj.data_range.first_date} s/d ${proj.data_range.last_date} (${proj.data_range.total_days} hari)` : '—'],
+            ],
+            theme: 'grid',
+            styles: { fontSize: F.table, cellPadding: 2, valign: 'middle' },
+            headStyles: { fillColor: urgencyColor, textColor: 255, fontStyle: 'bold', halign: 'center' },
+            columnStyles: { 0: { cellWidth: 60, fontStyle: 'bold' } },
+          });
+          y = (doc as any).lastAutoTable.finalY + 6;
+
+          if (y > pageHeight - 40) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.setFontSize(F.recTitle);
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(urgencyColor[0], urgencyColor[1], urgencyColor[2]);
+          doc.text('Rekomendasi:', 14, y);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(60, 60, 60);
+          const recLines = doc.splitTextToSize(pdfClean(proj.recommendation) || '-', pageWidth - 28);
+          if (y + 5 + recLines.length * 4 > pageHeight - 12) {
+            doc.addPage();
+            y = 20;
+          }
+          doc.text(recLines, 14, y + 5);
+          y += 5 + recLines.length * 4;
+
+          if (proj.actions && proj.actions.length > 0) {
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(36, 72, 141);
+            if (y + 6 > pageHeight - 12) {
+              doc.addPage();
+              y = 20;
+            }
+            doc.text('Langkah yang Direkomendasikan:', 14, y + 6);
+            doc.setFont('helvetica', 'normal');
+            doc.setTextColor(60, 60, 60);
+            proj.actions.forEach((action, ai) => {
+              const actLines = doc.splitTextToSize(`${ai + 1}. ${pdfClean(action)}`, pageWidth - 28);
+              if (y + 11 + actLines.length * 3.5 > pageHeight - 12) {
+                doc.addPage();
+                y = 20;
+              }
+              doc.text(actLines, 14, y + 11);
+              y += 6 + actLines.length * 4;
+            });
+          }
+          y += 6;
+        });
+      } else {
+        y += 8;
+        doc.setFontSize(F.meta);
+        doc.setTextColor(120);
+        doc.text('Proyeksi kapasitas belum tersedia — lakukan scan minimal 2 hari untuk menghasilkan proyeksi.', 14, y);
+        y += 8;
+      }
+
       // ── FOOTER ──────────────────────────────────────────
       const totalPages = doc.getNumberOfPages();
       for (let i = 1; i <= totalPages; i++) {
         doc.setPage(i);
-        doc.setFontSize(7);
+        doc.setFontSize(F.footer);
         doc.setTextColor(150);
         doc.text(`Halaman ${i} dari ${totalPages}`, pageWidth - 14, doc.internal.pageSize.getHeight() - 8, { align: 'right' });
         doc.text(`Dokumen ini dihasilkan secara otomatis oleh Server Capacity Monitoring — ${hostname}`, 14, doc.internal.pageSize.getHeight() - 8);
@@ -456,7 +695,7 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
   // Prepare chart data
   const lineChartData = records.map(r => ({
     tanggal: new Date(r.tanggal).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' }),
-    'CPU Peak': r.cpu_peak,
+    'CPU Peak': r.cpu_peak_max ?? r.cpu_peak,
     'RAM Peak': r.ram_peak,
     'Disk /': r.disk_root_pct,
     [secondaryDiskKey]: r.disk_data_pct
@@ -618,10 +857,10 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
                               <td className="px-2 py-2">
                                 <div className="flex items-center gap-1">
                                   <div className="w-12 bg-gray-200 dark:bg-gray-600 rounded-full h-2">
-                                    <div className={`h-2 rounded-full ${getBarColor(record.cpu_peak)}`} style={{ width: `${Math.min(record.cpu_peak, 100)}%` }}></div>
+                                    <div className={`h-2 rounded-full ${getBarColor(record.cpu_peak_max ?? record.cpu_peak)}`} style={{ width: `${Math.min(record.cpu_peak_max ?? record.cpu_peak, 100)}%` }}></div>
                                   </div>
                                   <div className="text-xs">
-                                    <span className="font-bold font-mono">{(record.cpu_peak ?? 0).toFixed(1)}%</span>
+                                    <span className="font-bold font-mono">{(record.cpu_peak_max ?? record.cpu_peak ?? 0).toFixed(1)}%</span>
                                     {record.cpu_peak_time && (
                                       <div className="text-blue-600 dark:text-blue-400">{record.cpu_peak_time}</div>
                                     )}
@@ -1165,7 +1404,103 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
                           {infoDate ? new Date(infoDate).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
                         </div>
                       </div>
+                      <div>
+                        <div className="text-sm opacity-90">Tanggal SAR</div>
+                        <div className="text-lg font-bold">{serverInfo?.server_date || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">Public IP</div>
+                        <div className="text-lg font-bold font-mono">{serverInfo?.public_ip || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">CPU</div>
+                        <div className="text-lg font-bold">{serverInfo?.cpu || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">RAM Total</div>
+                        <div className="text-lg font-bold">{serverInfo?.ram || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">System</div>
+                        <div className="text-lg font-bold">{serverInfo?.system || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">Serial Number</div>
+                        <div className="text-lg font-bold font-mono">{serverInfo?.serial || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">Hypervisor</div>
+                        <div className="text-lg font-bold">{serverInfo?.hypervisor || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-sm opacity-90">Uptime (saat ini)</div>
+                        <div className="text-lg font-bold">{serverInfo?.uptime || 'N/A'}</div>
+                      </div>
+                      <div>
+                         <div className="text-sm opacity-90">SLA Bulan Ini</div>
+                        <div className="text-lg font-bold">
+                          {sla != null && sla.coverage_pct != null ? `${sla.coverage_pct}%` : '-'}
+                          {sla != null && sla.days_of_data != null && sla.coverage_pct != null && (
+                            <span className="text-sm font-normal opacity-90 ml-1">({sla.days_of_data}/{sla.days_monitored ?? sla.days_in_month} hari)</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
+                  </div>
+
+                  {/* SLA Bulan ke Bulan */}
+                  <div className="bg-white dark:bg-slate-700 rounded-lg shadow overflow-hidden">
+                    <div className="p-4 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-slate-800 dark:to-slate-700 border-b border-gray-200 dark:border-gray-600">
+                      <h3 className="text-lg font-bold text-gray-900 dark:text-white">📅 SLA Bulan ke Bulan</h3>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">Coverage = hari data / hari dipantau (sejak monitoring aktif) · Target ≥99% · Hari tanpa data ≠ down, ditandai untuk investigasi · Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelumnya N/A</p>
+                    </div>
+                    {serverSLARows.length === 0 ? (
+                      <div className="text-center py-8 text-sm text-gray-500 dark:text-gray-400">Belum ada data SLA</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead className="bg-gray-50 dark:bg-slate-800">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 dark:text-gray-300">Bulan</th>
+                              <th className="px-4 py-3 text-center text-sm font-bold text-gray-700 dark:text-gray-300">Hari Dipantau</th>
+                              <th className="px-4 py-3 text-center text-sm font-bold text-gray-700 dark:text-gray-300">Hari Data</th>
+                              <th className="px-4 py-3 text-center text-sm font-bold text-gray-700 dark:text-gray-300">Tanpa Data</th>
+                              <th className="px-4 py-3 text-center text-sm font-bold text-gray-700 dark:text-gray-300">SLA %</th>
+                              <th className="px-4 py-3 text-center text-sm font-bold text-gray-700 dark:text-gray-300">Status</th>
+                              <th className="px-4 py-3 text-left text-sm font-bold text-gray-700 dark:text-gray-300">Keterangan</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {serverSLARows.map((row, idx) => {
+                              const hasSla = row.coverage_pct != null;
+                              const slaClass = !hasSla
+                                ? 'text-gray-400 dark:text-gray-500'
+                                : row.coverage_pct >= 99
+                                ? 'text-green-600 dark:text-green-400'
+                                : row.coverage_pct >= 95
+                                ? 'text-yellow-600 dark:text-yellow-400'
+                                : 'text-red-600 dark:text-red-400';
+                              return (
+                                <tr key={idx} className={`border-t border-gray-200 dark:border-gray-600 ${idx % 2 === 0 ? 'bg-white dark:bg-slate-700' : 'bg-gray-50 dark:bg-slate-800'}`}>
+                                  <td className="px-4 py-3 font-medium text-gray-900 dark:text-white">{monthFull(row.year_month)}{isRunningMonth(row.year_month) ? ' (berjalan)' : ''}</td>
+                                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{hasSla ? (row.days_monitored ?? row.days_in_month) : '—'}</td>
+                                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{hasSla ? row.days_of_data : '—'}</td>
+                                  <td className="px-4 py-3 text-center text-gray-700 dark:text-gray-300">{hasSla ? (row.days_no_data ?? row.days_down) : '—'}</td>
+                                  <td className={`px-4 py-3 text-center font-bold ${slaClass}`}>{hasSla ? `${row.coverage_pct}%` : '—'}</td>
+                                  <td className="px-4 py-3 text-center">
+                                    <span className={`px-2 py-1 rounded text-xs font-semibold ${getStatusColor(mapSlaStatus(row.status))}`}>
+                                      {getStatusBadge(mapSlaStatus(row.status))}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3 text-left text-sm text-gray-700 dark:text-gray-300">{slaVerdict(row.status)}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-600 text-xs text-gray-500 dark:text-gray-400">{SLA_NOTE}</div>
                   </div>
 
                   {/* Network Interfaces Table */}

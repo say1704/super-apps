@@ -43,6 +43,7 @@ class CapacityMetrics(Base):
     local_ip = Column(String, nullable=True)
     public_ip = Column(String, nullable=True)
     ethernet_interfaces = Column(JSON, nullable=True)
+    system_info = Column(JSON, nullable=True)
 
     status = Column(String, default='ok')
     alert_reason = Column(Text, nullable=True)
