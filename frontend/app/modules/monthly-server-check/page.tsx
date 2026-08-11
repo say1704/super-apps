@@ -6,7 +6,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { apiRequest } from '@/lib/auth';
 import ServerDetailModal from './components/server-detail-modal';
-import { exportCapacityReportPDF } from '@/lib/export';
+import { exportCapacityReportPDF, exportSLAPDF } from '@/lib/export';
 
 interface NetworkInterfaceDetail {
   interface_name: string;
@@ -29,6 +29,7 @@ interface ServerMetrics {
   alert_reason: string;
   cpu_peak: number;
   cpu_peak_time: string | null;
+  cpu_peak_max: number | null;
   ram_peak: number;
   ram_peak_time: string | null;
   disk_root_pct: number;
@@ -76,6 +77,8 @@ export default function MonthlyServerCheckModule() {
   });
 
   const [authMode, setAuthMode] = useState<'root' | 'sudo'>('root');
+  // One-time correction: re-parse & overwrite existing dates instead of skipping them.
+  const [overwrite, setOverwrite] = useState(false);
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password');
   const [showPassword, setShowPassword] = useState(false);
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
@@ -168,6 +171,32 @@ export default function MonthlyServerCheckModule() {
     }
   }, [fromDate, toDate]);
 
+  const handleExportSLAPDF = async () => {
+    if (!fromDate || !toDate) {
+      alert('Please select both from and to dates');
+      return;
+    }
+    if (fromDate > toDate) {
+      alert('From date must be before or equal to to date');
+      return;
+    }
+    const diffDays = Math.ceil((new Date(toDate).getTime() - new Date(fromDate).getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays > 365) { alert('Date range maximum 365 days'); return; }
+    setReportLoading(true);
+    try {
+      const data = await apiRequest(`/api/v1/capacity-reports/sla-export?from_date=${fromDate}&to_date=${toDate}`);
+      if (!data.rows || data.rows.length === 0) {
+        alert(`No SLA data available for ${fromDate} to ${toDate}.`);
+        return;
+      }
+      await exportSLAPDF(data, fromDate, toDate);
+    } catch (err: any) {
+      console.error('Export SLA failed:', err);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
   const fetchScanModeInfo = async () => {
     try {
       const data = await apiRequest('/api/capacity-planning/scan-mode');
@@ -225,7 +254,8 @@ export default function MonthlyServerCheckModule() {
         port: fetchData.port,
         sar_dir: fetchData.sar_dir,
         mode: fetchData.mode,
-        auth_mode: authMode  // root or sudo
+        auth_mode: authMode,  // root or sudo
+        overwrite: overwrite  // re-parse & update existing dates
       };
 
       if (authMethod === 'key' && fetchData.private_key) {
@@ -270,6 +300,7 @@ export default function MonthlyServerCheckModule() {
               alertMsg += `📁 Total Files Found: ${s.total_files_found}\n`;
               alertMsg += `📥 Files to Import: ${s.files_after_filter}\n`;
               alertMsg += `✅ Imported: ${s.imported}\n`;
+              if (s.overwritten) alertMsg += `🔁 Overwritten (re-parse): ${s.overwritten}\n`;
               alertMsg += `⏭️ Skipped (Duplicate): ${s.skipped_existing}\n`;
               alertMsg += `🗓️ Skipped (Old): ${s.skipped_old_date || 0}\n`;
               if (s.errors && s.errors.length > 0) {
@@ -366,6 +397,7 @@ export default function MonthlyServerCheckModule() {
           sar_dir: fetchData.sar_dir || '/var/log/sa',
           auth_mode: 'sudo',
           max_workers: bulkMaxWorkers,
+          overwrite: overwrite,  // re-parse & update existing dates
         }),
       });
 
@@ -691,6 +723,25 @@ export default function MonthlyServerCheckModule() {
                 />
               </div>
 
+              {/* Overwrite / re-parse toggle (one-time correction) */}
+              <div className="col-span-2">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={overwrite}
+                    onChange={(e) => setOverwrite(e.target.checked)}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="font-medium text-sm">🔁 Timpa data lama (re-parse)</span>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                      Hitung ulang & perbarui tanggal yang sudah ada (RAM/CPU/disk/network) dengan
+                      logika terbaru — tanpa menghapus data. Nyalakan hanya untuk koreksi sekali.
+                    </p>
+                  </span>
+                </label>
+              </div>
+
               {/* SSH Key field */}
               {bulkAuthMode === 'key' && (
                 <div className="col-span-2">
@@ -884,6 +935,26 @@ export default function MonthlyServerCheckModule() {
                 {scanModeInfo.last_scan_date && ` (Last scan: ${new Date(scanModeInfo.last_scan_date).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })})`}
               </p>
             )}
+          </div>
+
+          {/* Overwrite / re-parse toggle (one-time correction) */}
+          <div className="mb-4">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={overwrite}
+                onChange={(e) => setOverwrite(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium text-sm">🔁 Timpa data lama (re-parse)</span>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                  Perbarui tanggal yang sudah ada di database (hitung ulang RAM/CPU/disk/network
+                  dengan logika terbaru), bukan melewatinya. Data lama TIDAK dihapus. Nyalakan hanya
+                  untuk koreksi sekali; matikan lagi untuk scan rutin.
+                </p>
+              </span>
+            </label>
           </div>
 
           {/* Auth Method Selector */}
@@ -1125,6 +1196,13 @@ export default function MonthlyServerCheckModule() {
             {reportLoading ? '⏳' : '📄'} PDF Report
           </button>
           <button
+            onClick={handleExportSLAPDF}
+            disabled={reportLoading}
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 text-sm"
+          >
+            {reportLoading ? '⏳' : '📊'} Analisa SLA
+          </button>
+          <button
             onClick={() => loadDashboard()}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
           >
@@ -1199,12 +1277,12 @@ export default function MonthlyServerCheckModule() {
                     <div className="flex items-center gap-1">
                       <div className="flex-1 bg-gray-200 dark:bg-gray-700 rounded-full h-2 w-12">
                         <div
-                          className={`h-2 rounded-full ${server.cpu_peak > 90 ? 'bg-red-500' : server.cpu_peak > 80 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                          style={{ width: `${Math.min(server.cpu_peak, 100)}%` }}
+                          className={`h-2 rounded-full ${(server.cpu_peak_max ?? server.cpu_peak) > 90 ? 'bg-red-500' : (server.cpu_peak_max ?? server.cpu_peak) > 80 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                          style={{ width: `${Math.min(server.cpu_peak_max ?? server.cpu_peak, 100)}%` }}
                         ></div>
                       </div>
                       <div className="text-xs">
-                        <span className="font-mono">{(server.cpu_peak ?? 0).toFixed(1)}%</span>
+                        <span className="font-mono">{(server.cpu_peak_max ?? server.cpu_peak).toFixed(1)}%</span>
                         {server.cpu_peak_time && (
                           <div className="text-blue-600 dark:text-blue-400 text-xs">{server.cpu_peak_time}</div>
                         )}

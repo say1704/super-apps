@@ -7,6 +7,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional
 from pydantic import BaseModel
 from collections import defaultdict
+import calendar
 import re
 import time
 import os
@@ -34,23 +35,35 @@ def _sanitize_path(path: str) -> str:
 
 
 def _round_pct(value) -> Optional[float]:
-    """Round percentage value to 1 decimal; returns None for None/empty."""
+    """Round percentage value to 2 decimals; returns None for None/empty."""
     if value is None:
         return None
     try:
-        return round(float(value), 1)
+        return round(float(value), 2)
     except (TypeError, ValueError):
         return None
 
 
 def _parse_size_mb(value: Optional[str]) -> float:
-    """Extract numeric MB value from strings like '123.45 MB' or '0.00 MB (note)'."""
+    """Return size in MB from strings like '123.45 MB', '2.34 GB', '512 KB', '0.00 MB (note)'.
+
+    Unit-aware: B/KB/MB/GB/TB (and *iB variants) are converted to MB; a bare number is
+    assumed to already be MB. Previously this treated every value as MB, so 'x GB' was
+    understated ~1000x on high-traffic hosts.
+    """
     if not value:
         return 0.0
+    tokens = str(value).split()
+    if not tokens:
+        return 0.0
     try:
-        return float(value.split()[0])
+        num = float(tokens[0])
     except (ValueError, IndexError):
         return 0.0
+    unit = tokens[1] if len(tokens) > 1 else 'MB'
+    ukey = ''.join(c for c in unit.upper() if c.isalpha()).replace('IB', 'B')  # MiB->MB, GiB->GB
+    factors = {'B': 1 / (1024 * 1024), 'KB': 1 / 1024, 'MB': 1.0, 'GB': 1024.0, 'TB': 1024.0 * 1024.0}
+    return num * factors.get(ukey, 1.0)
 
 
 def _capacity_to_dict(record: CapacityMetrics) -> dict:
@@ -101,37 +114,26 @@ def _capacity_to_dict(record: CapacityMetrics) -> dict:
 
 # ==================== SUDO WRAPPER (scoped to this module only, experimental) ====================
 
-# Binary path overrides for sudo mode (avoids PATH issues)
-_CMD_MAP = {
-    'ls ': '/usr/bin/ls ',
-    'cat ': '/usr/bin/cat ',
-    'ip ': '/usr/sbin/ip ',
-}
-
-
 def _build_command(cmd: str, username: str, password: str) -> tuple:
     """
     Build final command for ssh.ssh.exec_command().
     - root user → bash -c 'cmd' (unchanged existing behavior)
-    - non-root + ENABLE_SUDO_MODE → printf | sudo -S direct binary (no bash)
+    - non-root + ENABLE_SUDO_MODE → sudo -S -p '' sh -c 'cmd'
     - non-root + sudo OFF → bash -c 'cmd' (same as root)
 
-    ONLY two commands: ls and cat.
+    The sudo branch runs the binary via `sh` and lets sudo's secure_path resolve
+    ls/cat/ip. This mirrors a manual `sudo ls …` (which works) and is portable across
+    hosts where the binary lives in /bin vs /usr/bin — the old hardcoded `/usr/bin/ls`
+    failed on hosts without usrmerge, surfacing as a misleading "No log files found".
+    Paths are pre-sanitized by _sanitize_path (no shell metacharacters), so single-quote
+    wrapping is safe.
     """
     is_root = (username == 'root')
     use_sudo = (not is_root) and ENABLE_SUDO_MODE
 
     if use_sudo:
-        # Resolve binary to full path
-        resolved = cmd
-        for prefix, full in _CMD_MAP.items():
-            if cmd.startswith(prefix):
-                resolved = full + cmd[len(prefix):]
-                break
-        # Just the sudo command (no pipe, no echo) — password goes to stdin via ssh.exec_command
-        # sudo -S -p '' reads password from stdin
-        sudo_cmd = f"sudo -S -p '' {resolved}"
-        return (sudo_cmd, True)
+        # Password goes to stdin via ssh.exec_command; sudo -S -p '' reads it from stdin.
+        return (f"sudo -S -p '' sh -c '{cmd}'", True)
 
     # Root or sudo OFF: bash -c for wildcard expansion (existing behavior)
     return (f"bash -c '{cmd}'", False)
@@ -318,6 +320,7 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
         'partitions': [],  # All disk partitions
         'server_date': None,
         'public_ip': None,
+        'system_info': {},
         'ethernet_interfaces': [],
         'network_interfaces': []
     }
@@ -360,6 +363,20 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
                 metrics['server_date'] = line.split(':', 1)[1].strip()
             elif 'Public IP' in line and ':' in line:
                 metrics['public_ip'] = line.split(':', 1)[1].strip()
+            elif 'Serial Number' in line and ':' in line:
+                metrics['system_info']['serial'] = line.split(':', 1)[1].strip()
+            elif 'RAM Total' in line and ':' in line:
+                metrics['system_info']['ram'] = line.split(':', 1)[1].strip()
+            elif 'Hypervisor' in line and ':' in line:
+                metrics['system_info']['hypervisor'] = line.split(':', 1)[1].strip()
+            elif 'OS' in line and ':' in line:
+                metrics['system_info']['os'] = line.split(':', 1)[1].strip()
+            elif 'CPU' in line and ':' in line:
+                metrics['system_info']['cpu'] = line.split(':', 1)[1].strip()
+            elif 'System' in line and ':' in line:
+                metrics['system_info']['system'] = line.split(':', 1)[1].strip()
+            elif 'Uptime' in line and ':' in line:
+                metrics['system_info']['uptime'] = line.split(':', 1)[1].strip()
     
     # Parse USAGE NETWORK section
     in_network_section = False
@@ -415,7 +432,13 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
                     pass
             elif 'Internet' in line and ':' in line:
                 current_interface['internet_status'] = line.split(':', 1)[1].strip()
-    
+
+    # Derive scalar peak RX/TX (MB) from the parsed interfaces so freshly-created records
+    # match the backfill path (which computes the same). Without this, new records stored 0.
+    if metrics['network_interfaces']:
+        metrics['net_rx_peak'] = max(_parse_size_mb(n.get('total_rx')) for n in metrics['network_interfaces'])
+        metrics['net_tx_peak'] = max(_parse_size_mb(n.get('total_tx')) for n in metrics['network_interfaces'])
+
     # Parse CPU
     cpu_values = []
     cpu_max_usage = -1
@@ -456,39 +479,59 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
             metrics['cpu_peak_max'] = round(cpu_max_usage, 2)
             metrics['cpu_peak_time'] = cpu_peak_time
     
-    # Parse RAM
+    # Parse RAM.
+    # IMPORTANT: map columns from the sar header rather than fixed positions. Newer
+    # sysstat inserts a `kbavail` column (kbmemfree kbavail kbmemused %memused ...),
+    # so hardcoding %memused=parts[4] silently reads kbmemused and inflates RAM%.
+    # Reading the header keeps both old and new sysstat layouts correct.
     ram_values = []
     ram_max_pct = -1
     ram_peak_time = None
     in_ram_section = False
+    ram_cols = None  # header column-name -> index (aligned with data columns)
     for line in lines:
         if 'USAGE RAM' in line:
             in_ram_section = True
             continue
         if 'USAGE DISK' in line:
             break
-        if in_ram_section and ('AM' in line or 'PM' in line):
+        if not in_ram_section:
+            continue
+        # Detect the sar column header, e.g.:
+        #   "12:00:01 AM kbmemfree kbavail kbmemused %memused kbbuffers ... kbcommit %commit ..."
+        if 'kbmemfree' in line and '%memused' in line:
+            ram_cols = {name: i for i, name in enumerate(line.split())}
+            continue
+        if 'AM' in line or 'PM' in line:
             parts = line.split()
             try:
-                if len(parts) >= 6 and parts[2].replace('.','').isdigit():
-                    time_str = parts[0]
-                    ampm = parts[1]
+                if ram_cols:
+                    i_free = ram_cols.get('kbmemfree')
+                    i_used = ram_cols.get('kbmemused')
+                    i_pct = ram_cols.get('%memused')
+                    i_commit = ram_cols.get('kbcommit')
+                    if i_pct is None or len(parts) <= i_pct or not parts[i_pct].replace('.', '').isdigit():
+                        continue
+                    kbmemfree = float(parts[i_free]) if i_free is not None and len(parts) > i_free else 0.0
+                    kbmemused = float(parts[i_used]) if i_used is not None and len(parts) > i_used else 0.0
+                    memused_pct = float(parts[i_pct])
+                    kbcommit = float(parts[i_commit]) if i_commit is not None and len(parts) > i_commit else 0.0
+                else:
+                    # Fallback (no header found): legacy fixed positions (old sysstat w/o kbavail)
+                    if len(parts) < 6 or not parts[2].replace('.', '').isdigit():
+                        continue
                     kbmemfree = float(parts[2])
                     kbmemused = float(parts[3])
                     memused_pct = float(parts[4])
-                    ram_values.append({'time': time_str, 'ampm': ampm, 'kbmemfree': kbmemfree, 'kbmemused': kbmemused, 'memused_pct': memused_pct})
+                    kbcommit = 0.0
+                ram_values.append({'time': parts[0], 'ampm': parts[1], 'kbmemfree': kbmemfree,
+                                   'kbmemused': kbmemused, 'memused_pct': memused_pct, 'kbcommit': kbcommit})
             except (ValueError, IndexError):
                 continue
-    
+
     if ram_values:
-        # Normalize RAM: if memused_pct looks like raw KB (>100), convert to percentage
-        for entry in ram_values:
-            if entry['memused_pct'] > 100:
-                total_kb = entry['kbmemfree'] + entry['kbmemused']
-                if total_kb > 0:
-                    entry['memused_pct'] = (entry['kbmemused'] / total_kb) * 100
         metrics['kbmemfree_avg'] = sum(v['kbmemfree'] for v in ram_values) / len(ram_values)
-        metrics['kbcommit_avg'] = sum(v['kbmemused'] for v in ram_values) / len(ram_values)
+        metrics['kbcommit_avg'] = sum(v['kbcommit'] for v in ram_values) / len(ram_values)
         metrics['ram_avg'] = sum(v['memused_pct'] for v in ram_values) / len(ram_values)
         metrics['ram_peak'] = max(v['memused_pct'] for v in ram_values)
         for v in ram_values:
@@ -538,8 +581,11 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
                     # Accept /dev/*, ZFS (poolname/dataset), NFS (host:/share), BTRFS, etc.
                     is_virtual = any(
                         filesystem.startswith(skip)
-                        for skip in ('tmpfs', 'devtmpfs', 'shm', 'sysfs', 'proc', 'user/', 'cgroup', 'none', 'overlay', 'mqueue')
-                    )
+                        for skip in ('tmpfs', 'devtmpfs', 'shm', 'sysfs', 'proc', 'user/', 'cgroup', 'none',
+                                     'overlay', 'mqueue', 'efivarfs', 'squashfs', 'ramfs', 'debugfs',
+                                     'tracefs', 'configfs', 'pstore', 'fusectl', 'securityfs', 'autofs',
+                                     'hugetlbfs', 'binfmt_misc', 'devpts')
+                    ) or mount_point.startswith(('/sys', '/proc', '/run', '/dev', '/boot'))
                     if not is_virtual and mount_point != '/' and mount_point.startswith('/'):
                         physical_persistent_partitions.append((mount_point, use_pct))
 
@@ -582,6 +628,7 @@ class FetchSARRequest(BaseModel):
     sar_dir: str = "/var/log/sa"
     mode: Optional[str] = "auto"  # auto/daily/weekly/monthly
     auth_mode: Optional[str] = "root"  # root or sudo
+    overwrite: bool = False  # if True, re-parse & UPDATE existing dates (one-time correction)
 
 
 class BatchScanRequest(BaseModel):
@@ -594,6 +641,7 @@ class BatchScanRequest(BaseModel):
     sar_dir: str = "/var/log/sa"
     auth_mode: Optional[str] = "sudo"  # root or sudo
     max_workers: int = 50  # Parallel thread count (default 50)
+    overwrite: bool = False  # if True, re-parse & UPDATE existing dates (one-time correction)
 
 
 # ==================== HELPER FUNCTIONS ====================
@@ -655,44 +703,65 @@ def auto_detect_sar_mode(db: Session) -> tuple:
 
 
 def calculate_status_and_alert(metrics: dict) -> tuple:
-    """Calculate status and alert reason based on thresholds"""
+    """Calculate status and alert reason based on thresholds.
+
+    CPU alerts use the true daily peak (cpu_peak_max); cpu_peak (average) is kept only for
+    display. Disk checks BOTH the root and the data partition. Network alerts trigger on
+    interface RX/TX errors — the old %-thresholds never applied to 24h byte totals.
+    """
     thresholds = {
         'cpu': {'warning': 80, 'critical': 90},
         'ram': {'warning': 80, 'critical': 90},
         'disk': {'warning': 80, 'critical': 90},
-        'network': {'warning': 70, 'critical': 85}
     }
-    
+
     alerts = []
     status = 'ok'
-    
-    # Check CPU
-    if metrics.get('cpu_peak', 0) >= thresholds['cpu']['critical']:
-        alerts.append(f"CPU Critical: {metrics['cpu_peak']:.1f}%")
-        status = 'critical'
-    elif metrics.get('cpu_peak', 0) >= thresholds['cpu']['warning']:
-        alerts.append(f"CPU Warning: {metrics['cpu_peak']:.1f}%")
-        if status != 'critical':
+
+    def _bump(new):
+        nonlocal status
+        if new == 'critical':
+            status = 'critical'
+        elif new == 'warning' and status != 'critical':
             status = 'warning'
-    
-    # Check RAM
-    if metrics.get('ram_peak', 0) >= thresholds['ram']['critical']:
-        alerts.append(f"RAM Critical: {metrics['ram_peak']:.1f}%")
-        status = 'critical'
-    elif metrics.get('ram_peak', 0) >= thresholds['ram']['warning']:
-        alerts.append(f"RAM Warning: {metrics['ram_peak']:.1f}%")
-        if status != 'critical':
-            status = 'warning'
-    
-    # Check Disk
-    if metrics.get('disk_root_pct', 0) >= thresholds['disk']['critical']:
-        alerts.append(f"Disk Critical: {metrics['disk_root_pct']}%")
-        status = 'critical'
-    elif metrics.get('disk_root_pct', 0) >= thresholds['disk']['warning']:
-        alerts.append(f"Disk Warning: {metrics['disk_root_pct']}%")
-        if status != 'critical':
-            status = 'warning'
-    
+
+    # Check CPU — use the real peak (cpu_peak_max); fall back to average if peak missing
+    cpu_val = metrics.get('cpu_peak_max')
+    if cpu_val is None:
+        cpu_val = metrics.get('cpu_peak', 0) or 0
+    if cpu_val >= thresholds['cpu']['critical']:
+        alerts.append(f"CPU Critical: {cpu_val:.1f}%"); _bump('critical')
+    elif cpu_val >= thresholds['cpu']['warning']:
+        alerts.append(f"CPU Warning: {cpu_val:.1f}%"); _bump('warning')
+
+    # Check RAM (peak)
+    ram_val = metrics.get('ram_peak', 0) or 0
+    if ram_val >= thresholds['ram']['critical']:
+        alerts.append(f"RAM Critical: {ram_val:.1f}%"); _bump('critical')
+    elif ram_val >= thresholds['ram']['warning']:
+        alerts.append(f"RAM Warning: {ram_val:.1f}%"); _bump('warning')
+
+    # Check Disk — root AND data partition (e.g. /usr/local/syb), not just root
+    disk_checks = [
+        ('/', metrics.get('disk_root_pct', 0) or 0),
+        (metrics.get('disk_data_label') or 'data', metrics.get('disk_data_pct', 0) or 0),
+    ]
+    for label, pct in disk_checks:
+        if pct >= thresholds['disk']['critical']:
+            alerts.append(f"Disk Critical ({label}): {pct}%"); _bump('critical')
+        elif pct >= thresholds['disk']['warning']:
+            alerts.append(f"Disk Warning ({label}): {pct}%"); _bump('warning')
+
+    # Check Network — RX/TX errors on any interface (byte totals aren't %-utilization)
+    net_err = 0
+    for n in (metrics.get('network_interfaces') or []):
+        try:
+            net_err += int(n.get('total_rx_error', 0) or 0) + int(n.get('total_tx_error', 0) or 0)
+        except (ValueError, TypeError):
+            pass
+    if net_err > 0:
+        alerts.append(f"Network Warning: {net_err} RX/TX errors"); _bump('warning')
+
     return status, '; '.join(alerts) if alerts else None
 
 
@@ -743,24 +812,35 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
         err_ls = None
 
         scan_cmd = f"ls -1 {_sanitize_path(sar_dir)}/"
-        files_output, err_ls, ctx = _exec_remote(ssh, scan_cmd, ssh_username, ssh_password, timeout=30)
-        logger.debug(f"scan output: {len(files_output) if files_output else 0} chars")
+        raw_output, err_ls, ctx = _exec_remote(ssh, scan_cmd, ssh_username, ssh_password, timeout=30)
+        raw_lines = [f for f in (raw_output or '').split('\n') if f.strip()]
+        logger.debug(f"scan output: {len(raw_output) if raw_output else 0} chars, {len(raw_lines)} entries")
         if err_ls:
             logger.warning(f"scan stderr: {err_ls[:500]}")
 
-        if files_output:
-            filtered = [
-                f for f in files_output.split('\n')
-                if '_daily-' in f and '.log' in f
-            ]
-            file_list_full = [f if f.startswith('/') else f"{sar_dir.rstrip('/')}/{f}" for f in filtered]
-            files_output = "\n".join(file_list_full)
-            logger.info(f"Found {len(file_list_full)} daily log files")
+        filtered = [f for f in raw_lines if '_daily-' in f and '.log' in f]
+        file_list_full = [f if f.startswith('/') else f"{sar_dir.rstrip('/')}/{f}" for f in filtered]
+        logger.info(f"Found {len(file_list_full)} daily log files (of {len(raw_lines)} entries)")
 
-        files_output = (files_output or '').strip()
+        files_output = "\n".join(file_list_full).strip()
 
         if not files_output:
-            tracker.error(f"No log files found in {request_data['sar_dir']}")
+            # Surface WHY it failed instead of a generic message: mode, stderr, and a sample
+            # of what `ls` actually returned. Distinguishes permission/sudo/binary errors
+            # from a genuinely empty dir or a filename that doesn't match _daily-*.log.
+            mode = (ctx or {}).get('mode', '?')
+            sample = ', '.join(raw_lines[:10]) if raw_lines else '(empty)'
+            if err_ls:
+                detail = f"stderr: {err_ls.strip()[:300]}"
+            elif not raw_lines:
+                detail = "directory listing returned nothing (check path/permission; sudo resolves via secure_path)"
+            else:
+                detail = f"{len(raw_lines)} entries found but none match '_daily-*.log' — sample: {sample}"
+            tracker.error(f"No daily log files usable in {request_data['sar_dir']} [mode={mode}] — {detail}")
+            logger.warning(
+                f"Scan empty host={request_data['hostname']} dir={request_data['sar_dir']} "
+                f"mode={mode} raw_entries={len(raw_lines)} stderr={(err_ls or '')[:200]!r} sample={sample!r}"
+            )
             ssh.disconnect()
             db.close()
             return
@@ -773,8 +853,13 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
         skipped_count = 0
         skipped_old = 0
         backfill_count = 0
+        overwritten_count = 0
         network_count = 0
         errors = []
+
+        # One-time correction: when True, existing dates are re-parsed & UPDATED in place
+        # (instead of being skipped), without deleting history.
+        overwrite = bool(request_data.get('overwrite', False))
 
         # Determine scan mode and date cutoff
         mode = request_data.get('mode', 'auto')
@@ -894,22 +979,29 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                 # instead of skipping (allows rescan to fill network data gaps).
                 duplicate_key = (server_hostname, str(target_date))
                 backfill_record = None
+                overwrite_row = None
                 if duplicate_key in existing_set:
                     existing_row = db.query(CapacityMetrics).filter(
                         CapacityMetrics.hostname == server_hostname,
                         CapacityMetrics.tanggal == target_date
                     ).first()
-                    net_count = db.query(NetworkInterface).filter(
-                        NetworkInterface.hostname == server_hostname,
-                        NetworkInterface.tanggal == target_date
-                    ).count()
-                    missing_net = net_count == 0
-                    missing_eth = not (existing_row and existing_row.ethernet_interfaces)
-                    if not (missing_net or missing_eth):
-                        skipped_count += 1
-                        continue
-                    backfill_record = existing_row
-                    logger.info(f"Backfilling network/IP for {server_hostname} {target_date} (net_rows={net_count}, eth={not missing_eth})")
+                    if overwrite:
+                        # Force re-parse: update ALL metrics of the existing record in place.
+                        overwrite_row = existing_row
+                        logger.info(f"Overwrite (re-parse) {server_hostname} {target_date}")
+                    else:
+                        net_count = db.query(NetworkInterface).filter(
+                            NetworkInterface.hostname == server_hostname,
+                            NetworkInterface.tanggal == target_date
+                        ).count()
+                        missing_net = net_count == 0
+                        missing_eth = not (existing_row and existing_row.ethernet_interfaces)
+                        missing_uptime = not ((existing_row and existing_row.system_info) or {}).get('uptime')
+                        if not (missing_net or missing_eth or missing_uptime):
+                            skipped_count += 1
+                            continue
+                        backfill_record = existing_row
+                        logger.info(f"Backfilling server data for {server_hostname} {target_date} (net_rows={net_count}, eth={not missing_eth}, uptime={not missing_uptime})")
 
                 if backfill_record is not None:
                     # Backfill mode: only fill in the missing network/IP data
@@ -933,6 +1025,9 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                         backfill_record.server_date = metrics['server_date']
                     if metrics.get('public_ip'):
                         backfill_record.public_ip = metrics['public_ip']
+                    if metrics.get('system_info'):
+                        merged_si = {**(backfill_record.system_info or {}), **metrics['system_info']}
+                        backfill_record.system_info = merged_si or None
                     
                     record = backfill_record
                     net_rows = metrics.get('network_interfaces', [])
@@ -960,9 +1055,7 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                     metrics = parse_sar_log(content, server_hostname, request_data['hostname'], target_date)
                     status, alert_reason = calculate_status_and_alert(metrics)
 
-                    record = CapacityMetrics(
-                        tanggal=target_date,
-                        hostname=server_hostname,
+                    fields = dict(
                         ip_address=request_data['hostname'],
                         source='sar_ssh',
                         cpu_user_avg=metrics.get('cpu_user_avg', 0),
@@ -989,13 +1082,27 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                         peak_description=metrics.get('peak_description'),
                         parsed_at=utcnow(),
                         log_file=filename,
-                        created_by=user_data.get('username', 'system'),
                         ethernet_interfaces=metrics.get('ethernet_interfaces') or None,
+                        system_info=metrics.get('system_info') or None,
                         server_date=metrics.get('server_date'),
-                        public_ip=metrics.get('public_ip')
+                        public_ip=metrics.get('public_ip'),
                     )
-                    db.add(record)
-                    imported_count += 1
+                    if overwrite_row is not None:
+                        # Overwrite mode: update all metrics of the existing record in place
+                        # (keep original created_by).
+                        for _k, _v in fields.items():
+                            setattr(overwrite_row, _k, _v)
+                        record = overwrite_row
+                        overwritten_count += 1
+                    else:
+                        record = CapacityMetrics(
+                            tanggal=target_date,
+                            hostname=server_hostname,
+                            created_by=user_data.get('username', 'system'),
+                            **fields,
+                        )
+                        db.add(record)
+                        imported_count += 1
 
                     # Save ALL disk partitions
                     for part in metrics.get('partitions', []):
@@ -1085,6 +1192,7 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                     "total_files_found": total_files_all,
                     "files_after_filter": total_files,
                     "imported": imported_count,
+                    "overwritten": overwritten_count,
                     "backfilled_network": backfill_count,
                     "network_interfaces_saved": network_count,
                     "skipped_existing": skipped_count,
@@ -1125,9 +1233,10 @@ async def fetch_sar_data(
         'port': request.port,
         'sar_dir': request.sar_dir,
         'mode': request.mode,
-        'auth_mode': request.auth_mode
+        'auth_mode': request.auth_mode,
+        'overwrite': request.overwrite,
     }
-    
+
     user_data = {'username': current_user.username}
     
     # Start background task
@@ -1210,6 +1319,7 @@ async def batch_scan_all_servers(
                 'sar_dir': request.sar_dir,
                 'mode': 'auto',
                 'auth_mode': request.auth_mode,
+                'overwrite': request.overwrite,
             }
             single_op_id = f"{operation_id}-{hostname}"
             scan_and_import_sar(single_op_id, request_data, user_data)
@@ -1451,6 +1561,67 @@ async def get_server_detail(
     }
 
 
+# Effective SLA monitoring baseline — the new SAR script (with SERVER INFO /
+# Uptime) was deployed on this date. Months ending before it get NO SLA verdict.
+SLA_MONITORING_START = date(2026, 8, 10)
+
+def compute_month_sla(dates, year, month, today=None):
+    """Professional SLA coverage for one (server, month).
+
+    Denominator = pro-rated monitored window:
+      window_start = max(month start, earliest date of data)
+      window_end   = min(month end, report end / today)
+    For the current (running) month only complete days are counted
+    (end of yesterday) so a healthy server is not flagged while today's
+    scan has not run yet.
+    Coverage = days of data / window length. Days without data are reported
+    separately (days_no_data), not counted as confirmed downtime.
+    Months before the effective monitoring start (SAR script deploy) are
+    excluded — no SLA verdict is produced for them.
+    Returns dict or None when the monitored window is empty / pre-baseline.
+    """
+    ref_date = today or date.today()
+    if dates and not isinstance(next(iter(dates)), date):
+        dates = [datetime.strptime(str(d), "%Y-%m-%d").date() for d in dates]
+    month_start = date(year, month, 1)
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    if month_end < SLA_MONITORING_START:
+        return None
+    last_complete = ref_date
+    if ref_date == date.today() and month_end >= date.today():
+        last_complete = ref_date - timedelta(days=1)
+    window_end = min(month_end, last_complete)
+    window_start = max(month_start, min(dates)) if dates else month_start
+    window_start = max(window_start, SLA_MONITORING_START)
+    days_monitored = (window_end - window_start).days + 1
+    if days_monitored <= 0:
+        return None
+    in_window = [d for d in dates if window_start <= d <= window_end]
+    days_of_data = len(in_window)
+    if days_of_data == 0:
+        # No official-scan data yet since monitoring started (10-08-2026).
+        # This is not a downtime signal — keep a neutral Aman verdict.
+        return {
+            "days_in_month": (month_end - month_start).days + 1,
+            "days_monitored": days_monitored,
+            "days_of_data": 0,
+            "days_no_data": 0,
+            "days_down": 0,
+            "coverage_pct": None,
+            "status": "OK",
+        }
+    coverage = round(min(days_of_data, days_monitored) / days_monitored * 100, 2)
+    return {
+        "days_in_month": (month_end - month_start).days + 1,
+        "days_monitored": days_monitored,
+        "days_of_data": days_of_data,
+        "days_no_data": max(0, days_monitored - days_of_data),
+        "days_down": max(0, days_monitored - days_of_data),
+        "coverage_pct": coverage,
+        "status": 'OK' if coverage >= 99 else ('WARNING' if coverage >= 95 else 'KRITIS'),
+    }
+
+
 @router.get("/servers/{hostname}/interfaces", response_model=dict)
 async def get_server_interfaces(
     hostname: str,
@@ -1518,6 +1689,25 @@ async def get_server_interfaces(
             "mac_address": (eth_lookup.get(net.interface_name, {}) or {}).get('mac_address') or "-"
         } for net in net_records]
     
+    si = latest_metric.system_info or {}
+
+    today = date.today()
+    month_start = today.replace(day=1)
+    dates = [r for (r,) in db.query(CapacityMetrics.tanggal).filter(
+        CapacityMetrics.hostname == hostname,
+        CapacityMetrics.tanggal >= month_start
+    ).all()]
+    sla = compute_month_sla(dates, today.year, today.month, today)
+    sla = sla or {
+        "days_in_month": calendar.monthrange(today.year, today.month)[1],
+        "days_monitored": 0,
+        "days_of_data": 0,
+        "days_no_data": 0,
+        "days_down": 0,
+        "coverage_pct": None,
+        "status": "OK",
+    }
+
     return {
         "hostname": hostname,
         "latest_date": latest_date.isoformat() if latest_date else None,
@@ -1525,8 +1715,17 @@ async def get_server_interfaces(
         "server_info": {
             "hostname": hostname,
             "ip_address": latest_metric.ip_address or "-",
-            "os": latest_metric.source or "-"
-        }
+            "server_date": latest_metric.server_date or "-",
+            "public_ip": latest_metric.public_ip or "-",
+            "os": si.get("os") or latest_metric.source or "-",
+            "cpu": si.get("cpu") or "-",
+            "ram": si.get("ram") or "-",
+            "system": si.get("system") or "-",
+            "serial": si.get("serial") or "-",
+            "hypervisor": si.get("hypervisor") or "-",
+            "uptime": si.get("uptime") or "-"
+        },
+        "sla": dict(sla, month=today.strftime("%Y-%m"))
     }
 
 
