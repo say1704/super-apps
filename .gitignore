@@ -84,3 +84,6 @@ backend/test_decrypt.py
 backend/test_*.py
 docs/Pentest/
 security/
+
+# PM2 project-local runtime state (dump/pids/daemon logs)
+.pm2/

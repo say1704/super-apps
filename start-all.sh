@@ -1,5 +1,7 @@
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# Keep PM2 state project-local (dump/pids/daemon under super-apps/.pm2), not ~/.pm2.
+export PM2_HOME="$DIR/.pm2"
 LOG_DIR="$DIR/logs"
 mkdir -p "$LOG_DIR"
 

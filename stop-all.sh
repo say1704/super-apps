@@ -2,6 +2,8 @@
 # Stop all Super Apps services
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# Keep PM2 state project-local (dump/pids/daemon under super-apps/.pm2), not ~/.pm2.
+export PM2_HOME="$DIR/.pm2"
 # Shared helper for Admin UI (sqlite-web) lifecycle
 source "$DIR/admin-ui.sh"
 

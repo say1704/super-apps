@@ -7,6 +7,8 @@ set -e
 
 # ==================== CONFIG ====================
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Keep PM2 state project-local (dump/pids/daemon under super-apps/.pm2), not ~/.pm2.
+export PM2_HOME="$SCRIPT_DIR/.pm2"
 CERT_DIR="$SCRIPT_DIR/certs"
 CERT_FILE="$CERT_DIR/cert.pem"
 KEY_FILE="$CERT_DIR/key.pem"
