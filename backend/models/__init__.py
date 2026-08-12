@@ -13,3 +13,4 @@ from .tasks import *
 from .settings_models import *
 from .ai import *
 from .misc import *
+from .audit_trail import *

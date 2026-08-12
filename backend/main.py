@@ -96,6 +96,7 @@ from api.risk import router as risk_router
 from api.tasks import router as tasks_router
 from api.ssh_report import router as ssh_report_router
 from api.audit import router as audit_router
+from api.audit_trail import router as audit_trail_router
 from api.ai import router as ai_router
 from api.retention import router as retention_router
 
@@ -137,6 +138,7 @@ app.include_router(capacity_daily_report_router, prefix=API_V1_PREFIX)
 app.include_router(irmc_reports_router, prefix=API_V1_PREFIX)
 app.include_router(ssh_report_router, prefix=API_V1_PREFIX)
 app.include_router(audit_router, prefix=API_V1_PREFIX)
+app.include_router(audit_trail_router, prefix=API_V1_PREFIX)
 app.include_router(ai_router, prefix=API_V1_PREFIX)
 app.include_router(retention_router, prefix=API_V1_PREFIX)
 

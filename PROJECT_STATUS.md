@@ -1,8 +1,158 @@
 # 📊 SUPER APPS - PROJECT STATUS
 
-**Last Updated:** May 29, 2026 (Phase 153: SSH Report Parser Update — Format Baru + Hapus Durasi + Hapus Dedup — COMPLETE)
-**Status:** Phase 153 COMPLETE | SSH Report parser updated for new report format (4 columns, no duration), dedup removed for successful logins, UniqueConstraint removed
+**Last Updated:** August 12, 2026 (Phase 154: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE)
+**Status:** Phase 154 COMPLETE | Audit Trail export upgraded — PDF report + CSV with Intertek fields
 **Location:** /home/soni_buruzi/Workspace/01_Projects/IT_Projects/2026/super-apps
+
+---
+
+## 🔥 LATEST UPDATES (August 12, 2026 — Phase 154: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE)
+
+### Phase 154b: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE
+- ✅ **CSV Export upgraded** — `/audit-trail/export/csv` now includes all 9 Intertek fields (client_name, site_location, audit_type, scope, criteria, finding_category, root_cause, follow_up_date, verification_effectiveness)
+- ✅ **New PDF data endpoint** — `GET /audit-trail/export/data` returns findings + nested corrective_actions (all Intertek fields), respects RBAC & filters, logs EXPORT activity
+- ✅ **PDF Report renderer** — `exportAuditTrailPDF()` in `frontend/lib/export.ts`, standard format (navy header, info bar, findings table, corrective action plan tables, footer "Halaman X dari Y")
+- ✅ **Frontend rewrite** — `exportPDF` in audit-trail page fetches `/export/data` via `apiRequest` and renders PDF client-side (jsPDF + autoTable, already in package.json)
+- ✅ **No new dependencies** — reuses existing jspdf/jspdf-autotable pattern used by Capacity/SSH/Audit modules
+
+### Files Modified (Phase 154b - Export Upgrade)
+- `backend/api/audit_trail.py` — CSV export +9 Intertek columns; new `GET /audit-trail/export/data` endpoint
+- `frontend/lib/export.ts` — New `exportAuditTrailPDF()` renderer
+- `frontend/app/modules/audit-trail/page.tsx` — `exportPDF` rewritten to fetch data + render PDF
+
+### Verified
+- ✅ CSV export includes Intertek fields
+- ✅ `/export/data` returns findings + corrective actions (401 without auth = endpoint exists)
+- ✅ Old `/export/pdf` (nonexistent) removed — 404 confirmed
+- ✅ py_compile OK | tsc --noEmit OK | npm run build OK
+- ✅ Services restarted — all online, frontend 200 OK
+
+### Python: ✅ OK | TypeScript: ✅ OK | Build: ✅ OK
+
+---
+
+### Phase 154: Audit Trail - Intertek Format Upgrade — COMPLETE
+- ✅ **Database schema upgraded** — Added 9 new fields to `audit_findings` table for Intertek format
+- ✅ **Database schema upgraded** — Added 5 new fields to `corrective_actions` table for Intertek format
+- ✅ **Backend API updated** — All CRUD endpoints now accept and return Intertek format fields
+- ✅ **Frontend form updated** — New Finding form includes Intertek Format Details section with all fields
+- ✅ **Frontend detail modal updated** — Displays Intertek format fields in dedicated section
+- ✅ **Corrective Action form updated** — Includes Intertek format fields (action_plan, timeline, resources, effectiveness, follow-up)
+- ✅ **Backward compatible** — All new fields are nullable, existing data unaffected
+- ✅ **Migration script created** — `migrate_audit_trail_intertek.py` for safe database migration
+- ✅ **Database verified** — All 14 new fields present and functional
+- ✅ **Test data inserted** — Sample finding with Intertek fields successfully created
+
+### Intertek Format Fields Added
+
+**AuditFinding Model (9 new fields):**
+- `client_name` (String) — Client/company name
+- `site_location` (String) — Site location
+- `audit_type` (String) — initial/surveillance/recertification
+- `scope` (Text) — Audit scope description
+- `criteria` (Text) — Standards/criteria used
+- `finding_category` (String) — conformity/non_conformity/observation/ofi
+- `root_cause` (Text) — Root cause analysis
+- `follow_up_date` (Date) — Follow-up date
+- `verification_effectiveness` (Text) — How effectiveness will be verified
+
+**CorrectiveAction Model (5 new fields):**
+- `action_plan` (Text) — Detailed action plan
+- `timeline` (Text) — Implementation timeline
+- `resources_required` (Text) — Resources needed
+- `effectiveness_criteria` (Text) — How to measure effectiveness
+- `follow_up_actions` (Text) — Follow-up actions needed
+
+### Files Modified (Phase 154 - Intertek Upgrade)
+- `backend/models/audit_trail.py` — Added 14 new fields to models
+- `backend/api/audit_trail.py` — Updated all endpoints to handle Intertek fields
+- `backend/migrate_audit_trail_intertek.py` — Created migration script
+- `frontend/app/modules/audit-trail/page.tsx` — Updated form, detail modal, and corrective action form
+
+### Verified
+- ✅ Database migration successful (14 new columns added)
+- ✅ Backend API endpoints accept Intertek fields
+- ✅ Frontend form displays Intertek fields section
+- ✅ Frontend detail modal shows Intertek fields
+- ✅ Corrective action form includes Intertek fields
+- ✅ Test data inserted successfully
+- ✅ Frontend build successful
+- ✅ Backend health check: 200 OK
+
+### Python: ✅ OK | TypeScript: ✅ OK | Build: ✅ OK
+
+---
+
+## 🔥 LATEST UPDATES (August 12, 2026 — Phase 154: Audit Trail - ISO 27001:2022 & ISO 9001:2015 Compliance — COMPLETE)
+
+### Phase 154: Audit Trail - ISO 27001:2022 & ISO 9001:2015 Compliance — COMPLETE
+- ✅ **New Audit Trail module** — Track audit findings and corrective actions for ISO 27001:2022 and ISO 9001:2015 compliance
+- ✅ **AuditFinding model** — Stores findings with auto-generated finding numbers (F-YYYY-NNN), ISO standard, clause, severity, status, auditor, due date
+- ✅ **CorrectiveAction model** — Stores corrective actions linked to findings with status workflow (pending → in_progress → verified → closed)
+- ✅ **CRUD API endpoints** — 5 finding endpoints + 5 corrective action endpoints + 2 export endpoints + 1 risk dropdown endpoint
+- ✅ **Statistics endpoint** — Dashboard stats: total, open, in_progress, closed, overdue, by_severity
+- ✅ **RBAC integration** — Non-superadmin users see only findings with matching owner_role
+- ✅ **Activity logging** — All CRUD operations logged to activity_logs table
+- ✅ **Frontend page** — Table with filters (source, severity, status), stats cards, create/edit modal
+- ✅ **Detail modal** — Click finding number to view details and manage corrective actions
+- ✅ **Severity levels** — minor (yellow), major (orange), critical (red)
+- ✅ **Status workflow** — Finding: open → in_progress → closed | Action: pending → in_progress → verified → closed
+- ✅ **Overdue detection** — Findings with due_date < today and status != closed highlighted in red
+- ✅ **ISO standards** — ISO 27001:2022 (Information Security) and ISO 9001:2015 (Quality Management)
+- ✅ **Menu placement** — Security & Compliance → Audit Trail (after Audit File)
+- ✅ **Export functionality** — CSV and PDF export with filters
+- ✅ **Risk assessment link** — Optional link to risk assessment records
+
+### Features Implemented (Phase 1, 2 & 3)
+- **Backend:**
+  - `AuditFinding` model with 21 columns (finding_number, source, iso_standard, clause, title, description, evidence, severity, status, auditor_name, audit_date, risk_id, responsible_user_id, due_date, owner_role, created_at, created_by, updated_at, deleted_at, version)
+  - `CorrectiveAction` model with 16 columns (finding_id, action_description, responsible_user_id, due_date, status, completion_date, verification_notes, verified_by, verified_at, attachments, created_at, created_by, updated_at, deleted_at, version)
+  - Auto-generated finding numbers: `F-2026-001`, `F-2026-002`, etc.
+  - 5 CRUD endpoints for findings with validation and RBAC
+  - 5 CRUD endpoints for corrective actions (list, create, update, verify, delete)
+  - Statistics endpoint with counts by status and severity
+  - CSV export endpoint with filters (source, severity, status, date range)
+  - PDF export endpoint with filters (source, severity, status, date range)
+  - Risk assessment dropdown endpoint
+  - Soft delete support (deleted_at)
+  - Optimistic locking (version field)
+  
+- **Frontend:**
+  - Stats cards: Total, Open, In Progress, Closed, Overdue
+  - Filter bar: source (internal/external/surveillance), severity (minor/major/critical), status (open/in_progress/closed)
+  - Table with columns: Finding #, Title, ISO Standard, Severity, Status, Auditor, Due Date, Actions
+  - Create/Edit modal with all fields including risk assessment dropdown
+  - Detail modal showing finding details + corrective actions list
+  - Corrective action management (create, edit, verify, delete) from detail modal
+  - Export buttons (CSV and PDF) in header
+  - Overdue highlighting (red text for due_date < today)
+  - Pagination support
+
+### ISO Compliance Mapping
+- **ISO 27001:2022 Clause 9.2** (Internal Audit) → `AuditFinding` with `source=internal`
+- **ISO 9001:2015 Clause 9.2** (Internal Audit) → `AuditFinding` with `source=internal`
+- **ISO 9001:2015 Clause 10.2** (Nonconformity & Corrective Action) → `CorrectiveAction` model
+
+### Files Created (Phase 154)
+- `backend/models/audit_trail.py` — AuditFinding + CorrectiveAction models (80 lines)
+- `backend/api/audit_trail.py` — CRUD endpoints + stats + export (724 lines)
+- `frontend/app/modules/audit-trail/page.tsx` — Main page with table, filters, stats, modal, corrective actions, export (773 lines)
+
+### Files Modified (Phase 154)
+- `backend/models/__init__.py` — Added `from .audit_trail import *`
+- `backend/main.py` — Added audit_trail_router import and registration
+- `backend/api/dependencies.py` — Added `"audit-trail"` to ALL_MODULES list
+- `frontend/lib/modules.ts` — Added audit-trail to Security & Compliance submenu
+
+### Verified
+- ✅ `py_compile` passes on all backend files
+- ✅ TypeScript compilation: 0 errors
+- ✅ Frontend build successful
+- ✅ Backend health check: 200 OK
+- ✅ Frontend accessible: 200 OK
+- ✅ Database tables created: `audit_findings` (21 columns) + `corrective_actions` (16 columns)
+
+### Python: ✅ OK | TypeScript: ✅ OK | Build: ✅ OK
 
 ---
 

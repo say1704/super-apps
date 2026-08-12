@@ -30,6 +30,7 @@ export const ALL_MODULES: ModuleDef[] = [
       { key: "risk", label: "Risk Assessment", icon: "🎯", href: "/modules/risk" },
       { key: "quality", label: "Quality Objectives", icon: "✅", href: "/modules/quality" },
       { key: "audit", label: "Audit File", icon: "🔍", href: "/modules/audit" },
+      { key: "audit-trail", label: "Audit Trail", icon: "📋", href: "/modules/audit-trail" },
     ],
   },
 

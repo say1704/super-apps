@@ -1577,6 +1577,236 @@ export async function exportBackupAnalyticsReportPDF(
 }
 
 
+/**
+ * Export Audit Trail report PDF — format seragam dengan Capacity/SSH/Audit File.
+ * Menampilkan findings (termasuk field Intertek) plus corrective actions per finding.
+ */
+export async function exportAuditTrailPDF(
+  data: { data: any[]; total: number },
+  filters?: { source?: string; severity?: string; status?: string },
+) {
+  const records = data?.data || [];
+  if (!records || records.length === 0) {
+    console.warn('No data to export');
+    return;
+  }
+
+  const { default: jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 14;
+  const navy = [36, 72, 141] as [number, number, number];
+
+  const sevLabel: Record<string, string> = { minor: 'Minor', major: 'Major', critical: 'Critical' };
+  const statusLabel: Record<string, string> = { open: 'Open', in_progress: 'In Progress', closed: 'Closed' };
+  const srcLabel: Record<string, string> = { internal: 'Internal', external: 'External', surveillance: 'Surveillance' };
+  const catLabel: Record<string, string> = {
+    conformity: 'Conformity',
+    non_conformity: 'Non-Conformity',
+    observation: 'Observation',
+    ofi: 'OFI',
+  };
+  const actStatusLabel: Record<string, string> = {
+    pending: 'Pending', in_progress: 'In Progress', verified: 'Verified', closed: 'Closed',
+  };
+
+  const openCount = records.filter((r: any) => r.status === 'open').length;
+  const inProgressCount = records.filter((r: any) => r.status === 'in_progress').length;
+  const closedCount = records.filter((r: any) => r.status === 'closed').length;
+  const overdueCount = records.filter((r: any) =>
+    r.status !== 'closed' && r.due_date && new Date(r.due_date) < new Date()
+  ).length;
+  const criticalCount = records.filter((r: any) => r.severity === 'critical').length;
+  const majorCount = records.filter((r: any) => r.severity === 'major').length;
+  const minorCount = records.filter((r: any) => r.severity === 'minor').length;
+  const totalActions = records.reduce((s: number, r: any) => s + ((r.corrective_actions || []).length), 0);
+
+  const filterParts: string[] = [];
+  if (filters?.source) filterParts.push(`Source: ${srcLabel[filters.source] || filters.source}`);
+  if (filters?.severity) filterParts.push(`Severity: ${sevLabel[filters.severity] || filters.severity}`);
+  if (filters?.status) filterParts.push(`Status: ${statusLabel[filters.status] || filters.status}`);
+  const filterStr = filterParts.length > 0 ? ` | ${filterParts.join(' • ')}` : ' | Semua Data';
+
+  // ── HEADER ──
+  doc.setFillColor(...navy);
+  doc.rect(0, 0, pageW, 32, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(20);
+  doc.setFont('helvetica', 'bold');
+  doc.text('LAPORAN AUDIT TRAIL', margin, 16);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  doc.text(`ISO 27001:2022 & ISO 9001:2015${filterStr}`, margin, 26);
+
+  doc.setFontSize(9);
+  const nowStr = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  doc.text(`Dicetak: ${nowStr}`, pageW - margin, 16, { align: 'right' });
+  doc.text('Sistem Manajemen TI Terintegrasi — Audit Trail', pageW - margin, 26, { align: 'right' });
+
+  // ── INFO BAR ──
+  let y = 44;
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...navy);
+  doc.text(`Total Finding: ${records.length}`, margin, y);
+  doc.setTextColor(220, 38, 38);
+  doc.text(`Open: ${openCount}`, margin + 55, y);
+  doc.setTextColor(202, 138, 4);
+  doc.text(`In Progress: ${inProgressCount}`, margin + 95, y);
+  doc.setTextColor(34, 139, 34);
+  doc.text(`Closed: ${closedCount}`, margin + 145, y);
+  doc.setTextColor(80);
+  doc.text(`Overdue: ${overdueCount}`, margin + 185, y);
+  doc.setTextColor(59, 130, 246);
+  doc.text(`Actions: ${totalActions}`, margin + 230, y);
+  y += 8;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(100);
+  doc.text(`Severity — Critical: ${criticalCount}  |  Major: ${majorCount}  |  Minor: ${minorCount}`, margin, y);
+  y += 8;
+
+  // ── FINDINGS TABLE ──
+  const headers = ['No.', 'Finding No.', 'Client', 'Site', 'Audit Type', 'ISO Std', 'Clause', 'Title', 'Category', 'Severity', 'Status', 'Auditor', 'Audit Date', 'Due Date', 'Follow-up'];
+  const findingsBody = records.map((r: any, i: number) => [
+    i + 1,
+    r.finding_number || '-',
+    r.client_name || '-',
+    r.site_location || '-',
+    r.audit_type ? (catLabel[r.audit_type] || r.audit_type) : '-',
+    r.iso_standard || '-',
+    r.clause || '-',
+    r.title || '-',
+    r.finding_category ? (catLabel[r.finding_category] || r.finding_category) : '-',
+    r.severity || '-',
+    r.status || '-',
+    r.auditor_name || '-',
+    r.audit_date || '-',
+    r.due_date || '-',
+    r.follow_up_date || '-',
+  ]);
+
+  autoTable(doc, {
+    startY: y,
+    head: [headers],
+    body: findingsBody,
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 1.5, valign: 'middle' },
+    headStyles: { fillColor: navy as any, textColor: 255, fontStyle: 'bold', halign: 'center' },
+    alternateRowStyles: { fillColor: [245, 245, 250] },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 8 },
+      1: { cellWidth: 24 },
+      9: { halign: 'center', cellWidth: 17 },
+      10: { halign: 'center', cellWidth: 20 },
+    },
+    didParseCell: function (celldata) {
+      if (celldata.section === 'body' && celldata.column.index === 9) {
+        const val = String(celldata.cell.raw);
+        if (val === 'critical') {
+          (celldata.cell as any).styles.textColor = [220, 38, 38];
+          (celldata.cell as any).styles.fontStyle = 'bold';
+        } else if (val === 'major') {
+          (celldata.cell as any).styles.textColor = [202, 138, 4];
+        }
+      }
+      if (celldata.section === 'body' && celldata.column.index === 10) {
+        const val = String(celldata.cell.raw);
+        if (val === 'open') {
+          (celldata.cell as any).styles.textColor = [220, 38, 38];
+        } else if (val === 'in_progress') {
+          (celldata.cell as any).styles.textColor = [202, 138, 4];
+        } else if (val === 'closed') {
+          (celldata.cell as any).styles.textColor = [34, 139, 34];
+        }
+      }
+    },
+  });
+
+  // ── CORRECTIVE ACTIONS ──
+  let ay = (doc as any).lastAutoTable?.finalY ?? y;
+  doc.setFontSize(11);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...navy);
+  doc.text('RENCANA TINDAK LANJUT (CORRECTIVE ACTION PLAN)', margin, ay + 12);
+  ay += 18;
+
+  const actionHeaders = ['Finding No.', 'Action / Plan', 'Timeline', 'Resources', 'Status', 'Due Date', 'Completion', 'Effectiveness Criteria', 'Follow-up Actions'];
+  let firstActionTable = true;
+  for (const r of records) {
+    const actions = r.corrective_actions || [];
+    if (actions.length === 0) continue;
+
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(80);
+    doc.text(`${r.finding_number || '-'} — ${r.title || ''}`, margin, ay + 4);
+    ay += 8;
+
+    const body = actions.map((a: any, i: number) => [
+      i + 1,
+      a.action_plan || a.action_description || '-',
+      a.timeline || '-',
+      a.resources_required || '-',
+      a.status ? (actStatusLabel[a.status] || a.status) : '-',
+      a.due_date || '-',
+      a.completion_date || '-',
+      a.effectiveness_criteria || '-',
+      a.follow_up_actions || '-',
+    ]);
+
+    autoTable(doc, {
+      startY: ay,
+      head: [actionHeaders],
+      body,
+      theme: 'grid',
+      styles: { fontSize: 6.5, cellPadding: 1.5, valign: 'middle' },
+      headStyles: { fillColor: [51, 65, 85] as any, textColor: 255, fontStyle: 'bold', halign: 'center' },
+      alternateRowStyles: { fillColor: [245, 245, 250] },
+      columnStyles: {
+        0: { halign: 'center', cellWidth: 8 },
+        4: { halign: 'center', cellWidth: 16 },
+      },
+      didParseCell: function (celldata) {
+        if (celldata.section === 'body' && celldata.column.index === 4) {
+          const val = String(celldata.cell.raw);
+          if (val === 'pending') {
+            (celldata.cell as any).styles.textColor = [100, 100, 100];
+          } else if (val === 'in_progress') {
+            (celldata.cell as any).styles.textColor = [202, 138, 4];
+          } else if (val === 'verified') {
+            (celldata.cell as any).styles.textColor = [59, 130, 246];
+          } else if (val === 'closed') {
+            (celldata.cell as any).styles.textColor = [34, 139, 34];
+          }
+        }
+      },
+      pageBreak: firstActionTable ? 'auto' : 'auto',
+    });
+    ay = (doc as any).lastAutoTable?.finalY ?? ay;
+    ay += 10;
+    firstActionTable = false;
+  }
+
+  // ── FOOTER ──
+  const totalPages = doc.getNumberOfPages();
+  for (let i = 1; i <= totalPages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(7);
+    doc.setTextColor(150);
+    doc.text(`Halaman ${i} dari ${totalPages}`, pageW - margin, pageH - 8, { align: 'right' });
+    doc.text('Dokumen ini dihasilkan secara otomatis oleh Sistem Manajemen TI Terintegrasi', margin, pageH - 8);
+    doc.setDrawColor(200);
+    doc.line(margin, pageH - 12, pageW - margin, pageH - 12);
+  }
+
+  doc.save(`audit_trail_report_${new Date().toISOString().split('T')[0]}.pdf`);
+}
+
+
 function _escapeHtml(s: unknown): string {
   const str = String(s ?? '');
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
