@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
+import OfficeFilePreview from '@/components/office-preview';
 
 const PROXY = '/api/proxy';
 
@@ -109,16 +110,9 @@ export default function UploadedFileViewer({ doc, downloadUrl }: UploadedFileVie
     );
   }
 
-  // DOCX / XLSX — cannot preview inline
-  if (['docx', 'xlsx', 'xls'].includes(fileType)) {
-    return (
-      <div className="border rounded-lg p-8 text-center bg-gray-50 dark:bg-gray-800">
-        <div className="text-5xl mb-4">{fileType.startsWith('doc') ? '📘' : '📊'}</div>
-        <p className="text-gray-600 dark:text-gray-300 mb-4">
-          Cannot preview {fileType.toUpperCase()} inline. Use the Download button above.
-        </p>
-      </div>
-    );
+  // DOCX / XLSX / XLS / DOC — inline preview via office-preview
+  if (['docx', 'xlsx', 'xls', 'doc'].includes(fileType)) {
+    return <OfficeFilePreview filePath={doc.file_path || ''} downloadUrl={downloadUrl} />;
   }
 
   // Fallback

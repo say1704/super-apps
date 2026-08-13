@@ -99,6 +99,7 @@ from api.audit import router as audit_router
 from api.audit_trail import router as audit_trail_router
 from api.ai import router as ai_router
 from api.retention import router as retention_router
+from api.preview import router as preview_router
 
 from sqlalchemy import text
 
@@ -141,6 +142,7 @@ app.include_router(audit_router, prefix=API_V1_PREFIX)
 app.include_router(audit_trail_router, prefix=API_V1_PREFIX)
 app.include_router(ai_router, prefix=API_V1_PREFIX)
 app.include_router(retention_router, prefix=API_V1_PREFIX)
+app.include_router(preview_router, prefix=API_V1_PREFIX)
 
 if __name__ == "__main__":
     import uvicorn

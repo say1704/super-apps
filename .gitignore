@@ -72,6 +72,9 @@ backend/logs/
 logs/
 *.token
 
+# Bundled LibreOffice (large binary distribution, local per-deployment)
+libreoffice/
+
 # Local tooling / scratch / archived docs
 .qwen/
 .opencode/

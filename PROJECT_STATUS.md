@@ -1,12 +1,40 @@
 # 📊 SUPER APPS - PROJECT STATUS
 
-**Last Updated:** August 12, 2026 (Phase 154: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE)
-**Status:** Phase 154 COMPLETE | Audit Trail export upgraded — PDF report + CSV with Intertek fields
+**Last Updated:** August 12, 2026 (Phase 155: Office File Live Preview — xlsx/xls/docx/doc — COMPLETE)
+**Status:** Phase 155 COMPLETE | Inline live preview for Excel & Word files in uploaded-file-viewer
 **Location:** /home/soni_buruzi/Workspace/01_Projects/IT_Projects/2026/super-apps
 
 ---
 
-## 🔥 LATEST UPDATES (August 12, 2026 — Phase 154: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE)
+## 🔥 LATEST UPDATES (August 12, 2026 — Phase 155: Office File Live Preview — COMPLETE)
+
+### Phase 155: Live Preview Excel (.xlsx/.xls) & Word (.docx/.doc)
+- ✅ **Inline rendering instead of PDF conversion** — Excel rendered as HTML sheet tabs (exceljs), Word rendered paged (docx-preview); NO PDF conversion anywhere
+- ✅ **Bundled LibreOffice in app root** — `super-apps/libreoffice/` (716MB, gitignored like `backend/data/ai/`); app is portable, does not depend on system install
+- ✅ **Backend normalization for legacy formats** — new `GET /api/v1/preview/office` converts `.xls`→`.xlsx` and `.doc`→`.docx` via bundled `soffice` launcher; auth-gated, path traversal safe (must stay under uploads/), cached in `backend/data/preview-cache/`
+- ✅ **Frontend** — new `office-preview.tsx` renders all 4 formats inline; `uploaded-file-viewer.tsx` now uses it (replaces the old "Cannot preview" message)
+- ✅ **Verified conversions** — xls→xlsx and doc→docx both produce valid OOXML (PK zip) via the real code path
+- ✅ **Security** — `get_current_user` required; path validation rejects traversal; unique LibreOffice profile per call avoids worker lock conflicts
+
+### Files Modified (Phase 155 - Office Preview)
+- `super-apps/libreoffice/` — Bundled LibreOffice 25.8 distribution (new, gitignored)
+- `.gitignore` — Added `libreoffice/`
+- `backend/api/preview.py` — New: office conversion endpoint (`.xls`/`.doc` normalization, cache, auth)
+- `backend/main.py` — Registered preview router
+- `frontend/components/office-preview.tsx` — New: inline Excel (sheet tabs) + Word renderer
+- `frontend/components/uploaded-file-viewer.tsx` — Office files now preview inline
+- `frontend/package.json` — Added `docx-preview@0.4.0` (only new dep; exceljs already present)
+
+### Verified
+- ✅ soffice launcher runs from app root (`--version` OK)
+- ✅ xls→xlsx, doc→docx conversion → valid OOXML bytes
+- ✅ Path traversal denied; endpoint returns 401 without auth (route registered)
+- ✅ py_compile OK | tsc --noEmit OK | npm run build OK
+- ✅ Services restarted — all online, frontend 200 OK
+
+### Python: ✅ OK | TypeScript: ✅ OK | Build: ✅ OK
+
+---
 
 ### Phase 154b: Audit Trail - PDF Report & CSV Intertek Export — COMPLETE
 - ✅ **CSV Export upgraded** — `/audit-trail/export/csv` now includes all 9 Intertek fields (client_name, site_location, audit_type, scope, criteria, finding_category, root_cause, follow_up_date, verification_effectiveness)
