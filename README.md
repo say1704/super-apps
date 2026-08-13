@@ -56,9 +56,14 @@ cd ../frontend && npm install && npm run build
 # 3. TLS certs (self-signed for local/LAN)
 ../scripts/generate-cert.sh
 
-# 4. Start everything (PM2)
-cd .. && npx pm2 start ecosystem.config.js
+# 4. Start / stop everything (PM2)
+cd .. && ./start-all.sh      # ./stop-all.sh to stop
 ```
+
+> Manage the app **only** via `./start-all.sh` / `./stop-all.sh`. They pin PM2 state
+> project-local (`PM2_HOME=<repo>/.pm2`) and export required env (e.g. `ENABLE_SUDO_MODE`).
+> Running a bare `npx pm2 …` targets the default `~/.pm2` daemon → a second PM2 daemon,
+> port conflicts, and missing env. If you must call pm2 directly: `PM2_HOME=<repo>/.pm2 pm2 …`.
 
 ## Secrets & configuration
 
@@ -69,6 +74,15 @@ No secrets are committed. Provide them locally (all git-ignored):
 - **`backend/.env`** — see `backend/.env.example`.
 - **TLS** — `certs/` (generated, not committed).
 - Runtime data (`backend/data/`, SQLite DB, `backend/logs/`) is git-ignored.
+
+### Large bundles (git-ignored — provide per deploy)
+
+Not committed (size); copy/install on each host, same as `venv`/`node_modules`:
+
+- **`libreoffice/`** (~717MB) — bundled LibreOffice used by the Office file preview
+  (`.doc/.xls → .docx/.xlsx`). Expected at `libreoffice/program/soffice`. If absent, office
+  preview auto-disables (the rest of the app runs normally).
+- **`backend/data/ai/`** — AI model files (`.gguf`).
 
 ## Tests (Playwright E2E)
 
