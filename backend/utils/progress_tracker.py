@@ -2,7 +2,8 @@
 import time
 import threading
 import logging
-from typing import Dict, Any
+from datetime import datetime
+from typing import Dict, Any, Optional
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
@@ -14,13 +15,35 @@ MAX_STORE_SIZE = 100
 CLEANUP_AGE_SECONDS = 3600  # Remove entries older than 1 hour
 
 
+def _as_epoch(value: Any) -> Optional[float]:
+    """Coerce a stored timestamp to an epoch float, tolerating mixed formats.
+
+    Trackers may store timestamps either as epoch floats (time.time()) or as ISO
+    strings (utcnow().isoformat(), used by the batch/bulk scanners). Mixing the two
+    once broke cleanup with 'unsupported operand type(s) for -: float and str',
+    poisoning the whole store. Return None when the value is missing or unparseable
+    so the caller can skip aging that entry instead of raising.
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def _cleanup_old_entries():
     """Remove completed/error entries older than CLEANUP_AGE_SECONDS"""
     now = time.time()
     to_remove = []
     for op_id, store in progress_store.items():
-        age = now - (store.get("completed_at") or store.get("started_at") or now)
-        if age > CLEANUP_AGE_SECONDS:
+        ts = _as_epoch(store.get("completed_at")) or _as_epoch(store.get("started_at"))
+        if ts is None:
+            # Unknown/unparseable timestamp — keep the entry rather than crash.
+            continue
+        if now - ts > CLEANUP_AGE_SECONDS:
             to_remove.append(op_id)
     for op_id in to_remove:
         del progress_store[op_id]
