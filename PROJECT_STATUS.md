@@ -1,12 +1,157 @@
 # 📊 SUPER APPS - PROJECT STATUS
 
-**Last Updated:** August 12, 2026 (Phase 155: Office File Live Preview — xlsx/xls/docx/doc — COMPLETE)
-**Status:** Phase 155 COMPLETE | Inline live preview for Excel & Word files in uploaded-file-viewer
+**Last Updated:** August 20, 2026 (Phase 161: Backup Check Sorting asc/desc — COMPLETE)
+**Status:** Phase 161 COMPLETE | Backup Check table sort klik-header asc/desc + icon ▲/▼/↕
 **Location:** /home/soni_buruzi/Workspace/01_Projects/IT_Projects/2026/super-apps
 
 ---
 
-## 🔥 LATEST UPDATES (August 12, 2026 — Phase 155: Office File Live Preview — COMPLETE)
+## 🔥 LATEST UPDATES (August 20, 2026 — Phase 161: Backup Check Sorting asc/desc — COMPLETE)
+
+### Phase 161: Pola Sort Backup Check (asc/desc) 📋
+- ✅ **Problem** — klik header di tabel **Backup Status by Server** sebelumnya menjalankan *group-based sort* (`groupPriority`): kolom sama memutar prioritas grup [1,2,3]→[2,3,1], bukan toggle naik/turun; icon header menampilkan label grup (Today/Week/1K+…) bukan panah arah urutan
+- ✅ **Fix (backup-table.tsx)** — sort kini **ascending/descending** standar: klik kolom yang sama ⇄ toggle asc/desc; klik kolom baru → `asc`; `sort_order` dihormati di semua branch
+- ✅ **Comparator per-kolom alami** — Server: `localeCompare`; Last Backup: timestamp (`Date.getTime()`) asc=terlama→terbaru, desc=terbaru→terlama; Files: numerik; Size: pakai `size_bytes` (numerik, bukan string format); Status: rank hari (`today`=0, `Yesterday`=1, "N days ago"=N) asc=terbaru dulu, desc=terlama dulu
+- ✅ **Icon header ▲/▼/↕** — kolom terurut menampilkan ▲ (asc) / ▼ (desc), kolom lain ↕ (belum terurut); label grup lama dihapus
+- ✅ **`groupPriority` dibuang** — state, rotasi prioritas, dan branch grouping per-IP/ukuran/umur dihapus total; `useEffect` reset pagination pada `[sort_by, sort_order]` tetap dipertahankan
+- ✅ **Hanya 1 file frontend** — header tabel, pagination (5 tombol), export button, dan status badge tidak diubah; backend & API tidak disentuh
+
+### Files Modified (Phase 161)
+- `frontend/app/modules/backup-check/components/backup-table.tsx` — handleSort (toggle asc/desc), sortedRecords (comparator per-kolom × `dir`), getSortIcon (▲/▼/↕), hapus `groupPriority`
+
+### Verified
+- ✅ `npx tsc --noEmit` OK (no type errors)
+- ✅ `npm run build` OK — Compiled successfully
+- ✅ `PM2_HOME=<repo>/.pm2 pm2 restart superapps-frontend` OK — online, HTTPS 3443
+- ✅ `https://127.0.0.1:3443/modules/backup-check` → HTTP 200
+- ⚠️ **Manual verification required** — klik tiap header: icon berubah ▲↔▼, urutan baris berubah sesuai asc/desc, pagination reset ke halaman 1, status badge & export tidak terpengaruh
+
+### TypeScript: ✅ OK | Build: ✅ OK
+
+---
+
+## 🔥 LATEST UPDATES (August 20, 2026 — Phase 160: SLA Report Layout Fix — COMPLETE)
+
+### Phase 160: Perbaikan SLA Report 📈 Server Capacity Monitoring
+- ✅ **Problem 1 — catatan "Keterangan" terpotong** — `doc.text(<string 1 baris ~330 karakter>)` di `exportSLAPDF` membuat teks keluar dari lebar kertas dan terpotong di "…Uptime se"; jsPDF tidak membungkus teks otomatis
+- ✅ **Fix 1 (export.ts)** — catatan kini ditulis via `doc.splitTextToSize(keteranganNote, pageW - 2*margin)` lalu `doc.text(keteranganLines, ...)`; posisi `y` maju sesuai jumlah baris agar tabel tidak menimpa catatan
+- ✅ **Fix 2 (server-detail-modal.tsx)** — catatan `SLA PER BULAN` pada PDF per-server mengikuti pola yang sama (`splitTextToSize(pageWidth - 28)`)
+- ✅ **Problem 2 — tabel Keterangan tidak rapi** — tabel 11 kolom `exportSLAPDF` pakai unit mm dengan lebar tetap total 264mm vs lebar berguna ~217mm (margin default autotable) → kolom **Keterangan terdesak ~0mm** dan header wrap per-huruf ("K e t e r a n g a n")
+- ✅ **Fix 3 (export.ts)** — set `margin: { left, right }` eksplisit (lebar berguna 269mm) + rebalance semua lebar kolom (total 269mm): No 9 · Hostname 38 · Bulan 22 · Hari Dipantau 22 · Hari Data 18 · Tanpa Data 18 · SLA% 18 · Uptime 40 · Tgl Uptime 20 · Status 18 · **Keterangan 46**
+- ✅ **Fix 4 (server-detail-modal.tsx)** — tabel SLA PER BULAN kini berlebar tetap proporsional (total 269mm): Bulan 54 · Hari Dipantau 30 · Hari Data 22 · Tanpa Data 22 · SLA% 24 · Status 30 · **Keterangan 87**
+- ✅ **Tidak menyentuh yang lain** — hanya blok `exportSLAPDF` (export.ts) dan bagian `SLA PER BULAN` (server-detail-modal.tsx); fungsi export lain, backend, `sla-status.ts`, dan teks verdict tidak diubah
+
+### Files Modified (Phase 160)
+- `frontend/lib/export.ts` — catatan Keterangan pakai `splitTextToSize`; `margin` eksplisit + lebar 11 kolom diseimbangkan (total 269mm)
+- `frontend/app/modules/monthly-server-check/components/server-detail-modal.tsx` — catatan SLA PER BULAN pakai `splitTextToSize`; lebar 7 kolom SLA diseimbangkan (total 269mm)
+
+### Verified
+- ✅ `npx tsc --noEmit` OK (no type errors)
+- ✅ `npm run build` OK — Compiled successfully
+- ✅ Bundle baru memuat `keteranganNote` (fix ter-rollout ke server)
+- ✅ `pm2 restart superapps-frontend` OK — online
+- ⚠️ **Manual verification required** — ekspor `📊 Analisa SLA`: catatan Keterangan utuh (tidak "…Uptime se"), header rapi, kolom Keterangan proporsional; cek juga PDF per-server (SLA PER BULAN)
+
+### TypeScript: ✅ OK | Build: ✅ OK
+
+---
+
+## 🔥 LATEST UPDATES (August 20, 2026 — Phase 159: Scan Mode untuk Audit File & SSH Report — COMPLETE)
+
+### Phase 159: 📊 Scan Mode (Date Range) Audit File + SSH Report
+- ✅ **Problem** — Scan **Audit File** (`audit.py`) dan **SSH Report** (`ssh_report.py`) membaca SEMUA file non-duplikat tanpa jendela tanggal; setelah libur panjang, file lama tidak terkontrol dan backfill butuh window eksplisit (seperti yang sudah ada di Server Capacity Phase 156)
+- ✅ **📊 Scan Mode dropdown** — ditambahkan ke form **Add Server** dan **Bulk Import** kedua modul, dengan opsi `auto` (semua file), `daily` (7 hari), `weekly` (30 hari), `monthly` (365 hari)
+- ✅ **Non-breaking default** — mode `auto` (default, dan bila request lama tidak mengirim `mode`) = **tanpa filter tanggal** → membaca semua file persis seperti perilaku sebelumnya; tidak ada data yang hilang karena default
+- ✅ **Filter diterapkan sebelum batch read** — file lebih tua dari cutoff (`target_date < cutoff_date`) di-drop dari `file_list` sebelum di-`cat` dari SSH, menghemat waktu/bandwidth untuk mode non-auto
+- ✅ **Validator `mode`** — `@field_validator` menormalkan lowercase & menolak nilai selain auto/daily/weekly/monthly (mengikuti pola `backup_check_simple.py`)
+- ✅ **Summary diperluas (additive)** — `progress_store` result kini menyertakan `mode`, `days_checked`, `cutoff_date`, `skipped_old` di samping field lama; frontend yang ada tetap membaca field lama dengan benar
+- ✅ **Parser tidak diubah** — `audit_parser.py`, `parse_ssh_report`, model DB, menu, RBAC, dan `batch_reader.py` tidak disentuh; jalur `cat`/parse tetap identik
+- ✅ **File dengan format nama tidak valid tetap diproses** — regex tanggal gagal → file tetap masuk loop utama (error `Invalid filename format` seperti sebelumnya), bukan di-skip diam-diam
+
+### Files Modified (Phase 159)
+- `backend/api/audit.py` — `mode` field + validator di `FetchAuditRequest`/`BatchScanRequest`; cutoff filter `audit-email-YYYY-MM-DD` di `scan_and_import_audit` sebelum batch read; summary +4 field; `mode` diteruskan di `/fetch` & `_scan_single_server`
+- `backend/api/ssh_report.py` — sama (filename `YYYYMMDD_ssh_login_hostname.log`, parse `%Y%m%d`)
+- `frontend/app/modules/audit/page.tsx` — `mode` di state `fetchData`; dropdown 📊 Scan Mode di form Add Server & Bulk Import; kirim `mode` di `handleFetch`/`handleBulkImport`; alert selesai tampilkan Mode + skipped_old
+- `frontend/app/modules/ssh-report/page.tsx` — sama
+
+### Verified
+- ✅ `py_compile` OK — `audit.py` & `ssh_report.py` (backend syntax)
+- ✅ `npx tsc --noEmit` OK (no type errors)
+- ✅ `./restart-all.sh` OK — all 7 services online, /health 200 OK
+- ✅ Log backend bersih dari error import/route (hanya WARNING pre-existing embedder 503 saat startup model server)
+- ⚠️ **Manual verification required** — scan `auto` harus menghasilkan jumlah import sama seperti sebelumnya; scan `monthly` harus menarik file-file lama
+
+### Python: ✅ OK | TypeScript: ✅ OK
+
+---
+
+## 🔥 LATEST UPDATES (August 20, 2026 — Phase 158: Auto-Logout After Re-Login Fix — COMPLETE)
+
+### Phase 158: Fix "Login kemudian langsung ke-logout lagi"
+- ✅ **Problem** — Setelah logout (terutama lewat modal session timeout) lalu login ulang, user selalu dilempar kembali ke form login dalam ±1 detik (berulang terus)
+- ✅ **Root cause 1 — stale inactivity timer** — `frontend/hooks/useInactivityTimer.ts` menyimpan `lastActivityRef`/`warnedRef` lintas sesi; setelah warning modal timeout muncul lalu user re-login, state basi itu membuat tick pertama (`left <= 0`) memicu `onTimeout()` → auto-logout ~1 detik setelah login berhasil
+- ✅ **Root cause 2 — logout path tidak bersihkan session** — `handleTimeout` dan `handleLogout` di `frontend/components/ClientLayout.tsx` memanggil `apiRequest('/auth/logout')` + `router.push('/login')` secara mentah: token `sessionStorage['sa_auth_token']` dan state AuthContext tidak dibersihkan, sehingga `GET /api/v1/users/me` kembali 401 (bootstrap dengan token basi)
+- ✅ **Backend terbukti bukan penyebab** — row `user_sessions` baru tetap `active=1` di DB; log menunjukkan pola konsisten `POST /api/v1/token 200` diikuti ±1 detik `POST /api/v1/auth/logout 200`
+- ✅ **Fix 1 (useInactivityTimer.ts)** — added a reset effect: setiap timer (re)aktif (`enabled`/`timeout` berubah), `lastActivityRef = Date.now()`, `warnedRef = false`, `setIsWarning(false)`, `setRemaining(timeout)` — jam inaktivitas dihitung dari nol setiap kali login
+- ✅ **Fix 2 (ClientLayout.tsx)** — `handleTimeout` dan `handleLogout` kini memakai `logout()` dari context `useAuth()` (yang memanggil backend `/auth/logout`, membersihkan token storage, reset state user, dan redirect `/login`); hanya `handleStay` (refresh token) yang tetap memakai `apiRequest`
+- ✅ **Auto-logout feature preserved** — timeout 15 menit, modal warning (2 menit sebelum timeout), tombol "Stay Signed In" (`/token/refresh`), dan tombol Sign Out tetap berfungsi persis seperti sebelumnya
+
+### Files Modified (Phase 158)
+- `frontend/hooks/useInactivityTimer.ts` — Added reset effect on timer (re)activation (deps `[enabled, timeout]`)
+- `frontend/components/ClientLayout.tsx` — Import `useAuth` + `apiRequest`; destructure `const { logout } = useAuth()`; `handleTimeout` & `handleLogout` now call context `logout()`
+
+### Verified
+- ✅ `npx tsc --noEmit` OK (no type errors)
+- ✅ `./restart-all.sh` OK — all 7 services online
+- ✅ No backend changes; no DB schema changes
+- ⚠️ **Manual verification required** — idle sampai timeout → login ulang harus tetap login (tidak mental lagi ke form login)
+
+### TypeScript: ✅ OK
+
+---
+
+## 🔥 LATEST UPDATES (August 20, 2026 — Phase 157: SYB-SFTP SAR Parser Fix for CentOS 6 — COMPLETE)
+
+### Phase 157: SYB-SFTP Server Capacity (CPU/RAM/Disk) Parser Fix
+- ✅ **Problem** — SYB-SFTP (CentOS 6.4, old sysstat) reported CPU=0, RAM=0, Disk `/`=0 in Server Capacity monitoring; the SAR log format differs from the modern hosts
+- ✅ **Root cause 1 — 24h timestamps** — CentOS 6.4 sysstat writes CPU/RAM rows as `18:31:01 all ...` / `18:31:03 516772 7972112 93.91 ...` (24h, **no AM/PM**); the parser only accepted rows containing `AM`/`PM`, so all rows were skipped → cpu=0, ram=0
+- ✅ **Root cause 2 — wrapped `df` lines** — long LVM filesystem names (`/dev/mapper/vg_sybsftpbackup-lv_*`) wrap onto their own line, producing data rows of only `50G 12G 36G 25% /` (5 tokens); the parser treated the size token as the filesystem and then raised `int('/')` → row skipped → Disk `/`=0, `/home` lost
+- ✅ **Fix (additive, non-breaking for existing hosts)** — CPU & RAM gates now also accept a real time token (`HH:MM:SS`) in addition to AM/PM rows; RAM numeric fields strip the `*` suffix old sysstat appends; DISK section tracks a pending wrapped filesystem name so 5-token rows map correctly (`fs` from previous line, `use_pct`=4th token, `mount`=5th token)
+- ✅ **Existing logic preserved** — header-column RAM mapping (kbmemfree/kbavail), primary/secondary disk mapping rules, and row-exclusion guards are unchanged; modern AM/PM hosts produce identical output to before
+- ✅ **Verified** — full parser harness: old-format sample (24h + wrapped df + `*` suffixes) and a modern AM/PM unwrapped sample, 22/22 assertions pass (CPU/RAM peaks + times, Disk `/`=25%, wrapped fs mount recorded, `/usr/local/syb` NOT fabricated when absent, modern host secondary disk `/data`=50%)
+
+### Files Modified (Phase 157)
+- `backend/api/capacity_planning.py` — Added `_is_time_token()` helper; CPU section: line gate accepts 24h time tokens; RAM section: same gate + `rstrip('*')` on numeric fields; DISK section: `pending_filesystem` tracking for wrapped `df` filesystem lines
+
+### Verified
+- ✅ `py_compile` OK (backend syntax)
+- ✅ Parser harness 22/22 assertions pass (SYB-SFTP old format + modern AM/PM format)
+- ✅ `./restart-all.sh` OK — all 7 services online, all ports HEALTHY
+- ✅ No changes to frontend; no schema/migration changes
+
+### Python: ✅ OK
+
+---
+
+### Phase 156: Bulk Import Scan Mode + Auto-Detect Date Window Fix
+- ✅ **Bulk Import now has 📊 Scan Mode** — the Bulk Import form in Server Capacity monitoring now exposes the same Auto/Daily/Weekly/Monthly selector as Add Server; selection is sent to `/api/capacity-planning/scan-all` (`mode` field)
+- ✅ **Backend `BatchScanRequest` gains `mode` field** — previously bulk scan hardcoded `mode='auto'`, so users could never widen the window for backfills (e.g. after long holidays) to import older SAR files such as 14-08-2026 when scanning on 18-08-2026
+- ✅ **Auto-detect no longer silently drops dates** — `auto_detect_sar_mode()` same-day branch changed from a 3-day window to the advertised 7-day window (`"daily", 7`), so a bulk scan on the same day as an earlier import still covers the full "Last 7 days" and does not skip dates 4+ days old
+- ✅ **Existing overwrite logic preserved** — with Monthly + "Timpa data lama" checked, existing dates are re-parsed & updated in place; unchecked, existing complete records are skipped (missing network/eth/uptime still auto-backfilled); missing dates are imported
+- ✅ **Fix verified** — `tsc --noEmit` OK; existing lint issues are pre-existing and unrelated to this change
+
+### Files Modified (Phase 156)
+- `backend/api/capacity_planning.py` — Added `mode` to `BatchScanRequest`; `_scan_single_server` uses `request.mode or 'auto'`; `auto_detect_sar_mode()` same-day branch returns `"daily", 7` instead of `"daily", 3`
+- `frontend/app/modules/monthly-server-check/page.tsx` — Bulk Import form now includes 📊 Scan Mode dropdown (reuses `fetchData.mode`, shows auto-detect hint); `/scan-all` body includes `mode`
+
+### Verified
+- ✅ `ast.parse` OK (backend syntax)
+- ✅ `tsc --noEmit` OK (no type errors)
+- ✅ Existing eslint warnings/errors untouched (pre-existing, outside changed lines)
+
+### Python: ✅ OK | TypeScript: ✅ OK
+
+---
 
 ### Phase 155: Live Preview Excel (.xlsx/.xls) & Word (.docx/.doc)
 - ✅ **Inline rendering instead of PDF conversion** — Excel rendered as HTML sheet tabs (exceljs), Word rendered paged (docx-preview); NO PDF conversion anywhere

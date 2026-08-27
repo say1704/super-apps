@@ -24,13 +24,6 @@ interface BackupTableProps {
 export function BackupTable({ records, onRecheck, isLoading, onServerClick }: BackupTableProps) {
   const [sort_by, setSortBy] = useState<keyof BackupRecord>('server');
   const [sort_order, setSortOrder] = useState<'asc' | 'desc'>('asc');
-  const [groupPriority, setGroupPriority] = useState<{[key: string]: number[]}>({
-    'server': [1, 2, 3],  // IP ranges: 10.x, 192.x, others
-    'date': [1, 2, 3],    // Date ranges: Today, Week, Month, Older
-    'files': [1, 2, 3],   // File ranges: 0, 1-1000, 1000+
-    'size_formatted': [1, 2, 3],  // Size ranges: 0, <1GB, 1GB+
-    'status': [1, 2, 3]   // Status: OK, Warning, Critical
-  });
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -38,175 +31,45 @@ export function BackupTable({ records, onRecheck, isLoading, onServerClick }: Ba
 
   const handleSort = (column: keyof BackupRecord) => {
     if (sort_by === column) {
-      // Rotate group priority for this column
-      setGroupPriority(prev => ({
-        ...prev,
-        [column]: [...prev[column].slice(1), prev[column][0]]
-      }));
+      setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortBy(column);
       setSortOrder('asc');
-      // Reset group priority to default
-      setGroupPriority({
-        'server': [1, 2, 3],
-        'date': [1, 2, 3],
-        'files': [1, 2, 3],
-        'size_formatted': [1, 2, 3],
-        'status': [1, 2, 3]
-      });
     }
   };
 
   const getSortIcon = (column: keyof BackupRecord) => {
     if (sort_by !== column) return ' \u2195';
-    
-    // Show which group is on top for each column
-    const topGroup = groupPriority[column]?.[0] || 1;
-    
-    if (column === 'status') {
-      if (topGroup === 1) return ' \u2713';
-      if (topGroup === 2) return ' \u26A0';
-      if (topGroup === 3) return ' \u2717';
-    } else if (column === 'date') {
-      if (topGroup === 1) return ' Today';
-      if (topGroup === 2) return ' Week';
-      if (topGroup === 3) return ' Month+';
-    } else if (column === 'files') {
-      if (topGroup === 1) return ' 0';
-      if (topGroup === 2) return ' 1-1K';
-      if (topGroup === 3) return ' 1K+';
-    } else if (column === 'size_formatted') {
-      if (topGroup === 1) return ' 0';
-      if (topGroup === 2) return ' <1GB';
-      if (topGroup === 3) return ' 1GB+';
-    } else if (column === 'server') {
-      if (topGroup === 1) return ' 10.x';
-      if (topGroup === 2) return ' 192.x';
-      if (topGroup === 3) return ' Other';
-    }
-    
     return sort_order === 'asc' ? ' \u25B2' : ' \u25BC';
   };
 
-  // Sort records with grouping for all columns
+  // Sort records respecting ascending/descending direction for each column
   const sortedRecords = [...records].sort((a, b) => {
-    const aVal = a[sort_by];
-    const bVal = b[sort_by];
-    
-    // Group-based sort for all columns
+    const dir = sort_order === 'asc' ? 1 : -1;
+
+    if (sort_by === 'date') {
+      return dir * (new Date(a.date).getTime() - new Date(b.date).getTime());
+    }
+
+    if (sort_by === 'files') {
+      return dir * (Number(a.files) - Number(b.files));
+    }
+
+    if (sort_by === 'size_formatted') {
+      return dir * (Number(a.size_bytes) - Number(b.size_bytes));
+    }
+
     if (sort_by === 'status') {
-      const getEmojiGroup = (status: string) => {
-        if (status.includes('OK')) return 1;
-        if (status.includes('Warning')) return 2;
-        if (status.includes('Critical')) return 3;
-        return 9;
-      };
-      
-      const groupA = getEmojiGroup(String(aVal));
-      const groupB = getEmojiGroup(String(bVal));
-      
-      const priorityA = groupPriority['status'].indexOf(groupA);
-      const priorityB = groupPriority['status'].indexOf(groupB);
-      
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      
-      const getDays = (status: string) => {
+      const statusRank = (status: string) => {
         if (status.includes('today')) return 0;
         if (status.includes('Yesterday')) return 1;
         const match = status.match(/(\d+)\s*days/);
         return match ? parseInt(match[1]) : 999;
       };
-      
-      return getDays(String(aVal)) - getDays(String(bVal));
+      return dir * (statusRank(String(a.status)) - statusRank(String(b.status)));
     }
-    
-    // Date grouping
-    if (sort_by === 'date') {
-      const getDateGroup = (dateStr: string) => {
-        const date = new Date(dateStr);
-        const today = new Date();
-        const daysAgo = Math.floor((today.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-        
-        if (daysAgo === 0) return 1;  // Today
-        if (daysAgo <= 7) return 2;   // This week
-        return 3;                      // Month+
-      };
-      
-      const groupA = getDateGroup(String(aVal));
-      const groupB = getDateGroup(String(bVal));
-      
-      const priorityA = groupPriority['date'].indexOf(groupA);
-      const priorityB = groupPriority['date'].indexOf(groupB);
-      
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      
-      return String(aVal).localeCompare(String(bVal));
-    }
-    
-    // Files grouping
-    if (sort_by === 'files') {
-      const getFileGroup = (files: number) => {
-        if (files === 0) return 1;      // 0 files
-        if (files <= 1000) return 2;    // 1-1K files
-        return 3;                        // 1K+ files
-      };
-      
-      const groupA = getFileGroup(Number(aVal));
-      const groupB = getFileGroup(Number(bVal));
-      
-      const priorityA = groupPriority['files'].indexOf(groupA);
-      const priorityB = groupPriority['files'].indexOf(groupB);
-      
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      
-      return Number(aVal) - Number(bVal);
-    }
-    
-    // Size grouping
-    if (sort_by === 'size_formatted') {
-      const getSizeGroup = (sizeBytes: number) => {
-        if (sizeBytes === 0) return 1;           // 0
-        if (sizeBytes < 1024 * 1024 * 1024) return 2;  // <1GB
-        return 3;                                 // 1GB+
-      };
-      
-      const groupA = getSizeGroup(Number(aVal));
-      const groupB = getSizeGroup(Number(bVal));
-      
-      const priorityA = groupPriority['size_formatted'].indexOf(groupA);
-      const priorityB = groupPriority['size_formatted'].indexOf(groupB);
-      
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      
-      return Number(aVal) - Number(bVal);
-    }
-    
-    // Server IP grouping
-    if (sort_by === 'server') {
-      const getServerGroup = (ip: string) => {
-        if (ip.startsWith('10.')) return 1;      // 10.x.x.x
-        if (ip.startsWith('192.')) return 2;     // 192.168.x.x
-        return 3;                                 // Other
-      };
-      
-      const groupA = getServerGroup(String(aVal));
-      const groupB = getServerGroup(String(bVal));
-      
-      const priorityA = groupPriority['server'].indexOf(groupA);
-      const priorityB = groupPriority['server'].indexOf(groupB);
-      
-      if (priorityA !== priorityB) return priorityA - priorityB;
-      
-      return String(aVal).localeCompare(String(bVal));
-    }
-    
-    // Default sort for other cases
-    if (typeof aVal === 'number' && typeof bVal === 'number') {
-      return sort_order === 'asc' ? aVal - bVal : bVal - aVal;
-    }
-    
-    const comparison = String(aVal).localeCompare(String(bVal));
-    return sort_order === 'asc' ? comparison : -comparison;
+
+    return dir * String(a[sort_by]).localeCompare(String(b[sort_by]));
   });
 
   // Pagination calculations
