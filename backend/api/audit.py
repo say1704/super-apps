@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, case
 from datetime import datetime, date, timedelta
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import re
 import time
 import os
@@ -69,6 +69,15 @@ class FetchAuditRequest(BaseModel):
     port: int = 22
     audit_report_dir: str = "/var/log/audit"
     auth_mode: Optional[str] = "root"
+    mode: Optional[str] = "auto"
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("auto", "daily", "weekly", "monthly"):
+            raise ValueError("Mode must be auto, daily, weekly, or monthly")
+        return v
 
 
 class BatchScanRequest(BaseModel):
@@ -80,6 +89,15 @@ class BatchScanRequest(BaseModel):
     audit_report_dir: str = "/var/log/audit"
     auth_mode: Optional[str] = "sudo"
     max_workers: int = 50
+    mode: Optional[str] = "auto"
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("auto", "daily", "weekly", "monthly"):
+            raise ValueError("Mode must be auto, daily, weekly, or monthly")
+        return v
 
 
 # ==================== BACKGROUND SCAN ====================
@@ -153,6 +171,39 @@ def scan_and_import_audit(operation_id: str, request_data: dict, user_data: dict
         imported_count = 0
         skipped_count = 0
         errors = []
+
+        # Scan mode date-window filter (auto = no filter, preserves existing behavior)
+        mode = request_data.get('mode', 'auto')
+        days_to_check = 0
+        if mode == 'daily':
+            days_to_check = 7
+        elif mode == 'weekly':
+            days_to_check = 30
+        elif mode == 'monthly':
+            days_to_check = 365
+
+        cutoff_date = date.today() - timedelta(days=days_to_check) if days_to_check > 0 else None
+
+        skipped_old = 0
+        if cutoff_date is not None:
+            filtered_files = []
+            for file_path in file_list:
+                filename = file_path.split('/')[-1]
+                date_match = re.search(r'audit-email-(\d{4}-\d{2}-\d{2})', filename)
+                if date_match:
+                    try:
+                        file_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').date()
+                        if file_date < cutoff_date:
+                            skipped_old += 1
+                            continue
+                    except ValueError:
+                        pass
+                filtered_files.append(file_path)
+            file_list = filtered_files
+            total_files = len(file_list)
+            logger.info(f"[AUDIT] Scan mode: {mode}, cutoff: {cutoff_date}, files after filter: {total_files}, skipped old: {skipped_old}")
+        else:
+            logger.info(f"[AUDIT] Scan mode: auto (no date filter)")
 
         # Dedup check: load existing scan_dates for this server (by hostname OR ip_address)
         existing_records = db.query(AuditFileActivity.scan_date).filter(
@@ -279,9 +330,13 @@ def scan_and_import_audit(operation_id: str, request_data: dict, user_data: dict
                 "success": True,
                 "summary": {
                     "server": request_data['hostname'],
+                    "mode": mode or 'auto',
+                    "days_checked": days_to_check,
+                    "cutoff_date": cutoff_date.isoformat() if cutoff_date else None,
                     "total_files": total_files,
                     "imported": imported_count,
                     "skipped_existing": skipped_count,
+                    "skipped_old": skipped_old,
                     "errors": errors
                 }
             }
@@ -314,7 +369,8 @@ async def fetch_audit(
         'private_key': request.private_key,
         'port': request.port,
         'audit_report_dir': request.audit_report_dir,
-        'auth_mode': request.auth_mode
+        'auth_mode': request.auth_mode,
+        'mode': request.mode
     }
 
     user_data = {'username': current_user.username, 'role': current_user.role}
@@ -385,6 +441,7 @@ async def batch_scan_all_servers(
                 'port': request.port,
                 'audit_report_dir': request.audit_report_dir,
                 'auth_mode': request.auth_mode,
+                'mode': request.mode or 'auto',
                 'retry_delays': [2, 5, 10],
             }
             single_op_id = f"{operation_id}-{hostname}"

@@ -480,17 +480,18 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
           head: [slaHeaders],
           body: slaBody,
           theme: 'grid',
+          margin: { left: 14, right: 14 },
           styles: { fontSize: F.table, cellPadding: 2, valign: 'middle' },
           headStyles: { fillColor: [36, 72, 141], textColor: 255, fontStyle: 'bold', halign: 'center' },
           alternateRowStyles: { fillColor: [245, 245, 250] },
           columnStyles: {
-            0: { halign: 'center', cellWidth: 48 },
-            1: { halign: 'center' },
-            2: { halign: 'center' },
-            3: { halign: 'center' },
-            4: { halign: 'center', fontStyle: 'bold' },
-            5: { halign: 'center', fontStyle: 'bold' },
-            6: { halign: 'left' },
+            0: { halign: 'center', cellWidth: 54 },
+            1: { halign: 'center', cellWidth: 30 },
+            2: { halign: 'center', cellWidth: 22 },
+            3: { halign: 'center', cellWidth: 22 },
+            4: { halign: 'center', cellWidth: 24, fontStyle: 'bold' },
+            5: { halign: 'center', cellWidth: 30, fontStyle: 'bold' },
+            6: { halign: 'left', cellWidth: 87 },
           },
           didParseCell: function (data) {
             if (data.section !== 'body') return;
@@ -526,7 +527,9 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         doc.setFontSize(7);
         doc.setTextColor(120);
         doc.setFont('helvetica', 'normal');
-        doc.text('Catatan: ' + SLA_NOTE + ' Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelum tanggal itu = N/A.', 14, y - 5);
+        const slaNote = 'Catatan: ' + SLA_NOTE + ' Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelum tanggal itu = N/A.';
+        const slaNoteLines = doc.splitTextToSize(slaNote, pageWidth - 28);
+        doc.text(slaNoteLines, 14, y - 5);
       }
 
       const pdfClean = (s: string) => (s || '').replace(/[^\x20-\x7E]/g, ' ').replace(/\s{2,}/g, ' ').trim();

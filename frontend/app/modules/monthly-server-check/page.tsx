@@ -3,8 +3,9 @@
 
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, Fragment } from 'react';
 import { apiRequest } from '@/lib/auth';
+import { groupServersBySubnet } from '@/lib/subnet';
 import ServerDetailModal from './components/server-detail-modal';
 import { exportCapacityReportPDF, exportSLAPDF } from '@/lib/export';
 
@@ -395,6 +396,7 @@ export default function MonthlyServerCheckModule() {
           password: hasPassword ? bulkPassword : undefined,
           port: fetchData.port || 22,
           sar_dir: fetchData.sar_dir || '/var/log/sa',
+          mode: fetchData.mode,
           auth_mode: 'sudo',
           max_workers: bulkMaxWorkers,
           overwrite: overwrite,  // re-parse & update existing dates
@@ -585,39 +587,69 @@ export default function MonthlyServerCheckModule() {
               {servers.length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Belum ada server tersimpan</p>
               ) : (
-                <div className="grid grid-cols-2 gap-1">
-                  {servers.map((server: any) => {
-                    // Use IP address for SSH connection (not hostname which may not resolve)
-                    const serverLabel = server.hostname || server.ip_address;
-                    const serverAddress = server.ip_address || server.hostname;
-                    const isSelected = bulkSelectedServers.includes(serverAddress);
+                <div className="space-y-3">
+                  {groupServersBySubnet(servers).map((group) => {
+                    const groupAddrs = group.servers.map((s: any) => s.ip_address || s.hostname);
                     return (
-                      <label
-                        key={server.id}
-                        className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
-                          isSelected
-                            ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
-                            : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setBulkSelectedServers(prev => [...prev, serverAddress]);
-                            } else {
-                              setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
-                            }
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="truncate">{serverLabel}</span>
-                        {server.ip_address && server.hostname && (
-                          <span className="text-xs text-gray-400">({server.ip_address})</span>
-                        )}
-                        <span className="text-xs text-gray-400">({server.os || '?'})</span>
-                      </label>
+                      <div key={group.subnet}>
+                        <div className="flex items-center justify-between px-1 mb-1">
+                          <span className="text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                            {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => Array.from(new Set([...prev, ...groupAddrs])))}
+                              className="text-[11px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200"
+                            >
+                              Pilih grup
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => prev.filter(addr => !groupAddrs.includes(addr)))}
+                              className="text-[11px] px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-200"
+                            >
+                              Kosongkan grup
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {group.servers.map((server: any) => {
+                            // Use IP address for SSH connection (not hostname which may not resolve)
+                            const serverLabel = server.hostname || server.ip_address;
+                            const serverAddress = server.ip_address || server.hostname;
+                            const isSelected = bulkSelectedServers.includes(serverAddress);
+                            return (
+                              <label
+                                key={server.id}
+                                className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
+                                  isSelected
+                                    ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
+                                    : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setBulkSelectedServers(prev => [...prev, serverAddress]);
+                                    } else {
+                                      setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
+                                    }
+                                  }}
+                                  className="w-4 h-4"
+                                />
+                                <span className="truncate">{serverLabel}</span>
+                                {server.ip_address && server.hostname && (
+                                  <span className="text-xs text-gray-400">({server.ip_address})</span>
+                                )}
+                                <span className="text-xs text-gray-400">({server.os || '?'})</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -721,6 +753,26 @@ export default function MonthlyServerCheckModule() {
                   onChange={(e) => setBulkMaxWorkers(parseInt(e.target.value) || 50)}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
                 />
+              </div>
+
+              {/* Scan Mode */}
+              <div className="col-span-1">
+                <label className="block text-sm font-medium mb-1">📊 Scan Mode</label>
+                <select
+                  value={fetchData.mode}
+                  onChange={(e) => setFetchData({ ...fetchData, mode: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
+                >
+                  <option value="auto">🤖 Auto-Detect (Recommended)</option>
+                  <option value="daily">📅 Daily (Last 7 days)</option>
+                  <option value="weekly">📆 Weekly (Last 30 days)</option>
+                  <option value="monthly">🗓️ Monthly (All - 365 days)</option>
+                </select>
+                {fetchData.mode === 'auto' && scanModeInfo && (
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Auto-detected: <strong>{scanModeInfo.mode}</strong> - {scanModeInfo.description}
+                  </p>
+                )}
               </div>
 
               {/* Overwrite / re-parse toggle (one-time correction) */}
@@ -1232,8 +1284,20 @@ export default function MonthlyServerCheckModule() {
             </tr>
           </thead>
           <tbody>
-            {filteredServers.map((server, index) => (
-              <>
+            {(() => {
+              const groups = groupServersBySubnet(filteredServers);
+              let counter = 0;
+              return groups.map((group) => (
+                <Fragment key={group.subnet}>
+                  <tr className="bg-gray-100 dark:bg-slate-800/70 border-t border-gray-300 dark:border-gray-600">
+                    <td colSpan={13} className="px-2 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                      {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                    </td>
+                  </tr>
+                  {group.servers.map((server: any) => {
+                    const index = counter++;
+                    return (
+              <Fragment key={server.id}>
                 <tr key={server.id} className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700/50">
                   <td className="px-2 py-2">
                     {server.network_interfaces && server.network_interfaces.length > 1 && (
@@ -1343,7 +1407,7 @@ export default function MonthlyServerCheckModule() {
                   </td>
                 </tr>
                 {expandedServers.has(server.hostname) && server.network_interfaces && server.network_interfaces.length > 1 && (
-                  server.network_interfaces.map((iface, ifaceIdx) => (
+                  server.network_interfaces.map((iface: any, ifaceIdx: number) => (
                     <tr key={`${server.id}-iface-${ifaceIdx}`} className="bg-gray-50 dark:bg-slate-800/50 border-l-4 border-l-blue-500">
                       <td className="px-2 py-2"></td>
                       <td className="px-2 py-2"></td>
@@ -1377,8 +1441,12 @@ export default function MonthlyServerCheckModule() {
                     </tr>
                   ))
                 )}
-              </>
-            ))}
+              </Fragment>
+                    );
+                  })}
+                </Fragment>
+              ));
+            })()}
           </tbody>
         </table>
         {filteredServers.length === 0 && (

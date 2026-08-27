@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef, Fragment } from 'react';
 import { apiRequest } from '@/lib/auth';
+import { groupServersBySubnet } from '@/lib/subnet';
 import ExportButton from '@/components/ExportButton';
 import ServerDetailModal from './components/server-detail-modal';
 import { exportSSHReportPDF } from '@/lib/export';
@@ -45,6 +46,7 @@ export default function SSHReportModule() {
     port: 22,
     ssh_report_dir: '',
     private_key: '',
+    mode: 'auto',
   });
 
   const [authMode, setAuthMode] = useState<'root' | 'sudo'>('root');
@@ -226,7 +228,8 @@ export default function SSHReportModule() {
         username: fetchData.username,
         port: fetchData.port,
         ssh_report_dir: fetchData.ssh_report_dir,
-        auth_mode: authMode
+        auth_mode: authMode,
+        mode: fetchData.mode
       };
 
       if (authMethod === 'key' && fetchData.private_key) {
@@ -263,10 +266,16 @@ export default function SSHReportModule() {
 
             if (progress.status === 'completed' && progress.result) {
               const s = progress.result.summary;
-              let alertMsg = `✅ Scan Complete!\n\n`;
-              alertMsg += `📁 Total Files: ${s.total_files}\n`;
-              alertMsg += `✅ Imported: ${s.imported}\n`;
-              alertMsg += `⏭️ Skipped (Duplicate): ${s.skipped_existing}\n`;
+let alertMsg = `✅ Scan Complete!\n\n`;
+             alertMsg += `📁 Total Files: ${s.total_files}\n`;
+             alertMsg += `✅ Imported: ${s.imported}\n`;
+             alertMsg += `⏭️ Skipped (Duplicate): ${s.skipped_existing}\n`;
+             if (s.mode) {
+               alertMsg += `📊 Mode: ${s.mode}${s.days_checked ? ` (${s.days_checked} hari)` : ''}\n`;
+             }
+             if (s.skipped_old) {
+               alertMsg += `⏭️ Skipped (outside range): ${s.skipped_old}\n`;
+             }
               if (s.errors && s.errors.length > 0) {
                 alertMsg += `❌ Errors: ${s.errors.length}\n\n`;
                 s.errors.slice(0, 3).forEach((err: string, i: number) => {
@@ -352,6 +361,7 @@ export default function SSHReportModule() {
           ssh_report_dir: fetchData.ssh_report_dir || '/var/log/sa',
           auth_mode: 'sudo',
           max_workers: bulkMaxWorkers,
+          mode: fetchData.mode,
         }),
       });
 
@@ -509,34 +519,64 @@ export default function SSHReportModule() {
               {servers.length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Belum ada server tersimpan</p>
               ) : (
-                <div className="grid grid-cols-2 gap-1">
-                  {servers.map((server: any) => {
-                    const serverLabel = server.hostname || server.ip_address;
-                    const serverAddress = server.ip_address || server.hostname;
-                    const isSelected = bulkSelectedServers.includes(serverAddress);
+                <div className="space-y-3">
+                  {groupServersBySubnet(servers).map((group) => {
+                    const groupAddrs = group.servers.map((s: any) => s.ip_address || s.hostname);
                     return (
-                      <label
-                        key={server.hostname}
-                        className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
-                          isSelected
-                            ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
-                            : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setBulkSelectedServers(prev => [...prev, serverAddress]);
-                            } else {
-                              setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
-                            }
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="truncate">{serverLabel}</span>
-                      </label>
+                      <div key={group.subnet}>
+                        <div className="flex items-center justify-between px-1 mb-1">
+                          <span className="text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                            {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => Array.from(new Set([...prev, ...groupAddrs])))}
+                              className="text-[11px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200"
+                            >
+                              Pilih grup
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => prev.filter(addr => !groupAddrs.includes(addr)))}
+                              className="text-[11px] px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-200"
+                            >
+                              Kosongkan grup
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {group.servers.map((server: any) => {
+                            const serverLabel = server.hostname || server.ip_address;
+                            const serverAddress = server.ip_address || server.hostname;
+                            const isSelected = bulkSelectedServers.includes(serverAddress);
+                            return (
+                              <label
+                                key={server.hostname}
+                                className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
+                                  isSelected
+                                    ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
+                                    : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setBulkSelectedServers(prev => [...prev, serverAddress]);
+                                    } else {
+                                      setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
+                                    }
+                                  }}
+                                  className="w-4 h-4"
+                                />
+                                <span className="truncate">{serverLabel}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -651,6 +691,21 @@ export default function SSHReportModule() {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-1">📊 Scan Mode</label>
+            <select
+              value={fetchData.mode}
+              onChange={(e) => setFetchData({ ...fetchData, mode: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
+            >
+              <option value="auto">🤖 Auto — Semua file (Recommended)</option>
+              <option value="daily">📅 Daily — 7 hari terakhir</option>
+              <option value="weekly">📆 Weekly — 30 hari terakhir</option>
+              <option value="monthly">🗓️ Monthly — 365 hari (backfill libur panjang)</option>
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
           </div>
 
           <div className="mt-4 flex gap-2">
@@ -946,6 +1001,20 @@ export default function SSHReportModule() {
               />
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Auto-Scan: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">*_ssh_login_*.log</code></p>
             </div>
+            <div className="col-span-2">
+              <label className="block text-sm font-medium mb-1">📊 Scan Mode</label>
+              <select
+                value={fetchData.mode}
+                onChange={(e) => setFetchData({ ...fetchData, mode: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
+              >
+                <option value="auto">🤖 Auto — Semua file (Recommended)</option>
+                <option value="daily">📅 Daily — 7 hari terakhir</option>
+                <option value="weekly">📆 Weekly — 30 hari terakhir</option>
+                <option value="monthly">🗓️ Monthly — 365 hari (backfill libur panjang)</option>
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
+            </div>
           </div>
           <div className="mt-4 flex gap-2">
             <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
@@ -1074,30 +1143,39 @@ export default function SSHReportModule() {
             </tr>
           </thead>
           <tbody>
-            {servers.map((server) => (
-              <tr key={server.hostname} className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700/50">
-                <td className="px-4 py-3">
-                  <button
-                    onClick={() => setSelectedServer(server.hostname)}
-                    className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
-                    title="View SSH report details"
-                  >
-                    {server.hostname}
-                  </button>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">📊 Click for details</div>
-                </td>
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300 font-mono text-sm">{server.ip_address || '-'}</td>
-                <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                  {server.scan_date ? new Date(server.scan_date).toLocaleDateString('id-ID', {
-                    year: 'numeric',
-                    month: 'short',
-                    day: 'numeric'
-                  }) : '-'}
-                </td>
-                <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono">{server.total_logins}</td>
-                <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-mono">{server.success_count}</td>
-                <td className="px-4 py-3 text-right text-red-600 dark:text-red-400 font-mono">{server.failed_count}</td>
-              </tr>
+            {groupServersBySubnet(servers).map((group) => (
+              <Fragment key={group.subnet}>
+                <tr className="bg-gray-100 dark:bg-slate-800/70 border-t border-gray-300 dark:border-gray-600">
+                  <td colSpan={6} className="px-4 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                    {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                  </td>
+                </tr>
+                {group.servers.map((server: any) => (
+                  <tr key={server.hostname} className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700/50">
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => setSelectedServer(server.hostname)}
+                        className="text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                        title="View SSH report details"
+                      >
+                        {server.hostname}
+                      </button>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">📊 Click for details</div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700 dark:text-gray-300 font-mono text-sm">{server.ip_address || '-'}</td>
+                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
+                      {server.scan_date ? new Date(server.scan_date).toLocaleDateString('id-ID', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                      }) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-700 dark:text-gray-300 font-mono">{server.total_logins}</td>
+                    <td className="px-4 py-3 text-right text-green-600 dark:text-green-400 font-mono">{server.success_count}</td>
+                    <td className="px-4 py-3 text-right text-red-600 dark:text-red-400 font-mono">{server.failed_count}</td>
+                  </tr>
+                ))}
+              </Fragment>
             ))}
           </tbody>
         </table>

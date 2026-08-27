@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, case
 from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import re
 import time
 import os
@@ -279,6 +279,15 @@ class FetchSSHReportRequest(BaseModel):
     port: int = 22
     ssh_report_dir: str = "/var/log/sa"
     auth_mode: Optional[str] = "root"
+    mode: Optional[str] = "auto"
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("auto", "daily", "weekly", "monthly"):
+            raise ValueError("Mode must be auto, daily, weekly, or monthly")
+        return v
 
 
 class BatchScanRequest(BaseModel):
@@ -291,6 +300,15 @@ class BatchScanRequest(BaseModel):
     ssh_report_dir: str = "/var/log/sa"
     auth_mode: Optional[str] = "sudo"
     max_workers: int = 50
+    mode: Optional[str] = "auto"
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in ("auto", "daily", "weekly", "monthly"):
+            raise ValueError("Mode must be auto, daily, weekly, or monthly")
+        return v
 
 
 # ==================== BACKGROUND SCAN ====================
@@ -363,6 +381,39 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
         imported_count = 0
         skipped_count = 0
         errors = []
+
+        # Scan mode date-window filter (auto = no filter, preserves existing behavior)
+        mode = request_data.get('mode', 'auto')
+        days_to_check = 0
+        if mode == 'daily':
+            days_to_check = 7
+        elif mode == 'weekly':
+            days_to_check = 30
+        elif mode == 'monthly':
+            days_to_check = 365
+
+        cutoff_date = date.today() - timedelta(days=days_to_check) if days_to_check > 0 else None
+
+        skipped_old = 0
+        if cutoff_date is not None:
+            filtered_files = []
+            for file_path in file_list:
+                filename = file_path.split('/')[-1]
+                parts = filename.replace('.log', '').split('_ssh_login_', 1)
+                if len(parts) == 2:
+                    try:
+                        file_date = datetime.strptime(parts[0], '%Y%m%d').date()
+                        if file_date < cutoff_date:
+                            skipped_old += 1
+                            continue
+                    except ValueError:
+                        pass
+                filtered_files.append(file_path)
+            file_list = filtered_files
+            total_files = len(file_list)
+            logger.info(f"[SSH_REPORT] Scan mode: {mode}, cutoff: {cutoff_date}, files after filter: {total_files}, skipped old: {skipped_old}")
+        else:
+            logger.info(f"[SSH_REPORT] Scan mode: auto (no date filter)")
 
         hostnames_in_files = set()
         for file_path in file_list:
@@ -530,9 +581,13 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
                 "success": True,
                 "summary": {
                     "server": request_data['hostname'],
+                    "mode": mode or 'auto',
+                    "days_checked": days_to_check,
+                    "cutoff_date": cutoff_date.isoformat() if cutoff_date else None,
                     "total_files": total_files,
                     "imported": imported_count,
                     "skipped_existing": skipped_count,
+                    "skipped_old": skipped_old,
                     "errors": errors
                 }
             }
@@ -567,7 +622,8 @@ async def fetch_ssh_logs(
         'private_key': request.private_key,
         'port': request.port,
         'ssh_report_dir': request.ssh_report_dir,
-        'auth_mode': request.auth_mode
+        'auth_mode': request.auth_mode,
+        'mode': request.mode
     }
 
     user_data = {'username': current_user.username, 'role': current_user.role}
@@ -642,6 +698,7 @@ async def batch_scan_all_servers(
                 'port': request.port,
                 'ssh_report_dir': request.ssh_report_dir,
                 'auth_mode': request.auth_mode,
+                'mode': request.mode or 'auto',
                 'retry_delays': [2, 5, 10],
             }
             single_op_id = f"{operation_id}-{hostname}"

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import { apiRequest } from '@/lib/auth';
+import { groupServersBySubnet } from '@/lib/subnet';
 import { exportAuditPDF } from '@/lib/export';
 import AuditDetailModal from './components/audit-detail-modal';
 
@@ -42,6 +43,7 @@ export default function AuditPage() {
     port: 22,
     audit_report_dir: '',
     private_key: '',
+    mode: 'auto',
   });
   const [authMode, setAuthMode] = useState<'root' | 'sudo'>('root');
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password');
@@ -140,6 +142,7 @@ export default function AuditPage() {
         port: fetchData.port,
         audit_report_dir: fetchData.audit_report_dir,
         auth_mode: authMode,
+        mode: fetchData.mode,
       };
 
       if (authMethod === 'key' && fetchData.private_key) {
@@ -180,6 +183,12 @@ export default function AuditPage() {
               alertMsg += `📁 Total Files: ${s.total_files}\n`;
               alertMsg += `✅ Imported: ${s.imported}\n`;
               alertMsg += `⏭️ Skipped (Duplicate): ${s.skipped_existing}\n`;
+              if (s.mode) {
+                alertMsg += `📊 Mode: ${s.mode}${s.days_checked ? ` (${s.days_checked} hari)` : ''}\n`;
+              }
+              if (s.skipped_old) {
+                alertMsg += `⏭️ Skipped (outside range): ${s.skipped_old}\n`;
+              }
               if (s.errors && s.errors.length > 0) {
                 alertMsg += `❌ Errors: ${s.errors.length}\n\n`;
                 s.errors.slice(0, 3).forEach((err: string, i: number) => {
@@ -264,6 +273,7 @@ export default function AuditPage() {
           audit_report_dir: fetchData.audit_report_dir || '/var/log/audit',
           auth_mode: 'sudo',
           max_workers: bulkMaxWorkers,
+          mode: fetchData.mode,
         }),
       });
 
@@ -447,34 +457,64 @@ export default function AuditPage() {
               {servers.length === 0 ? (
                 <p className="text-sm text-gray-500 dark:text-gray-400 py-4 text-center">Belum ada server tersimpan</p>
               ) : (
-                <div className="grid grid-cols-2 gap-1">
-                  {servers.map((server: any) => {
-                    const serverLabel = server.hostname || server.ip_address;
-                    const serverAddress = server.ip_address || server.hostname;
-                    const isSelected = bulkSelectedServers.includes(serverAddress);
+                <div className="space-y-3">
+                  {groupServersBySubnet(servers).map((group) => {
+                    const groupAddrs = group.servers.map((s: any) => s.ip_address || s.hostname);
                     return (
-                      <label
-                        key={server.hostname}
-                        className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
-                          isSelected
-                            ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
-                            : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setBulkSelectedServers(prev => [...prev, serverAddress]);
-                            } else {
-                              setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
-                            }
-                          }}
-                          className="w-4 h-4"
-                        />
-                        <span className="truncate">{serverLabel}</span>
-                      </label>
+                      <div key={group.subnet}>
+                        <div className="flex items-center justify-between px-1 mb-1">
+                          <span className="text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                            {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => Array.from(new Set([...prev, ...groupAddrs])))}
+                              className="text-[11px] px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 rounded hover:bg-blue-200"
+                            >
+                              Pilih grup
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBulkSelectedServers(prev => prev.filter(addr => !groupAddrs.includes(addr)))}
+                              className="text-[11px] px-2 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-200"
+                            >
+                              Kosongkan grup
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {group.servers.map((server: any) => {
+                            const serverLabel = server.hostname || server.ip_address;
+                            const serverAddress = server.ip_address || server.hostname;
+                            const isSelected = bulkSelectedServers.includes(serverAddress);
+                            return (
+                              <label
+                                key={server.hostname}
+                                className={`flex items-center gap-2 p-2 rounded cursor-pointer text-sm transition ${
+                                  isSelected
+                                    ? 'bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700'
+                                    : 'hover:bg-gray-100 dark:hover:bg-slate-800 border border-transparent'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setBulkSelectedServers(prev => [...prev, serverAddress]);
+                                    } else {
+                                      setBulkSelectedServers(prev => prev.filter(addr => addr !== serverAddress));
+                                    }
+                                  }}
+                                  className="w-4 h-4"
+                                />
+                                <span className="truncate">{serverLabel}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -588,6 +628,21 @@ export default function AuditPage() {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-sm font-medium mb-1">📊 Scan Mode</label>
+            <select
+              value={fetchData.mode}
+              onChange={(e) => setFetchData({ ...fetchData, mode: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
+            >
+              <option value="auto">🤖 Auto — Semua file (Recommended)</option>
+              <option value="daily">📅 Daily — 7 hari terakhir</option>
+              <option value="weekly">📆 Weekly — 30 hari terakhir</option>
+              <option value="monthly">🗓️ Monthly — 365 hari (backfill libur panjang)</option>
+            </select>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
           </div>
 
           <div className="mt-4 flex gap-2">
@@ -754,6 +809,20 @@ export default function AuditPage() {
                 Pola: <code className="bg-blue-100 dark:bg-blue-800 px-1 rounded">audit-email-YYYY-MM-DD.txt</code>
               </p>
             </div>
+            <div className="col-span-2">
+              <label className="block text-sm font-medium mb-1">📊 Scan Mode</label>
+              <select
+                value={fetchData.mode}
+                onChange={(e) => setFetchData({ ...fetchData, mode: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
+              >
+                <option value="auto">🤖 Auto — Semua file (Recommended)</option>
+                <option value="daily">📅 Daily — 7 hari terakhir</option>
+                <option value="weekly">📆 Weekly — 30 hari terakhir</option>
+                <option value="monthly">🗓️ Monthly — 365 hari (backfill libur panjang)</option>
+              </select>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
+            </div>
             <div>
               <label className="block text-sm font-medium mb-1">Server IP/Address *</label>
               <input type="text" value={fetchData.hostname}
@@ -903,9 +972,16 @@ export default function AuditPage() {
             </tr>
           </thead>
           <tbody>
-            {servers.map((server) => {
-              const hasActivity = server.total_activities > 0;
-              return (
+            {groupServersBySubnet(servers).map((group) => (
+              <Fragment key={group.subnet}>
+                <tr className="bg-gray-100 dark:bg-slate-800/70 border-t border-gray-300 dark:border-gray-600">
+                  <td colSpan={5} className="px-4 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 font-mono">
+                    {group.subnet} <span className="font-normal text-gray-400">· {group.servers.length} server</span>
+                  </td>
+                </tr>
+                {group.servers.map((server: any) => {
+                  const hasActivity = server.total_activities > 0;
+                  return (
                 <tr key={server.hostname}
                   className="border-t border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer transition-colors"
                   onClick={() => setSelectedServer(server.hostname)}
@@ -955,8 +1031,10 @@ export default function AuditPage() {
                     </span>
                   </td>
                 </tr>
-              );
-            })}
+                  );
+                })}
+              </Fragment>
+            ))}
           </tbody>
         </table>
         {servers.length === 0 && (

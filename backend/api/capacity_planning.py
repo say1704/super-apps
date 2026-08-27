@@ -279,6 +279,13 @@ def _convert_to_24h(time_str: str, ampm: str) -> str:
         return time_str
 
 
+def _is_time_token(token: str) -> bool:
+    """True if token looks like a SAR timestamp (HH:MM:SS / HH:MM)."""
+    if not token or ':' not in token:
+        return False
+    return all(p.isdigit() for p in token.split(':'))
+
+
 def _generate_peak_description(cpu_peak_max, cpu_peak_time, cpu_avg, ram_peak_max, ram_peak_time, ram_avg) -> str:
     """Generate human-readable peak description for the last 24 hours."""
     parts = []
@@ -462,24 +469,25 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
             continue
         if 'USAGE RAM' in line:
             break
-        if in_cpu_section and ('AM' in line or 'PM' in line) and 'all' in line:
+        if in_cpu_section and 'all' in line:
             parts = line.split()
-            try:
-                all_idx = parts.index('all')
-                if len(parts) > all_idx + 6:
-                    time_str = parts[0]
-                    ampm = parts[1]
-                    user = float(parts[all_idx + 1])
-                    system = float(parts[all_idx + 3])
-                    iowait = float(parts[all_idx + 4])
-                    idle = float(parts[all_idx + 6])
-                    cpu_values.append({'user': user, 'system': system, 'iowait': iowait, 'idle': idle})
-                    cpu_usage = 100 - idle
-                    if cpu_usage > cpu_max_usage:
-                        cpu_max_usage = cpu_usage
-                        cpu_peak_time = _convert_to_24h(time_str, ampm)
-            except (ValueError, IndexError):
-                continue
+            if parts and ('AM' in line or 'PM' in line or _is_time_token(parts[0])):
+                try:
+                    all_idx = parts.index('all')
+                    if len(parts) > all_idx + 6:
+                        time_str = parts[0]
+                        ampm = parts[1] if len(parts) > 1 else ''
+                        user = float(parts[all_idx + 1])
+                        system = float(parts[all_idx + 3])
+                        iowait = float(parts[all_idx + 4])
+                        idle = float(parts[all_idx + 6])
+                        cpu_values.append({'user': user, 'system': system, 'iowait': iowait, 'idle': idle})
+                        cpu_usage = 100 - idle
+                        if cpu_usage > cpu_max_usage:
+                            cpu_max_usage = cpu_usage
+                            cpu_peak_time = _convert_to_24h(time_str, ampm)
+                except (ValueError, IndexError):
+                    continue
     
     if cpu_values:
         metrics['cpu_user_avg'] = sum(v['user'] for v in cpu_values) / len(cpu_values)
@@ -514,27 +522,27 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
         if 'kbmemfree' in line and '%memused' in line:
             ram_cols = {name: i for i, name in enumerate(line.split())}
             continue
-        if 'AM' in line or 'PM' in line:
-            parts = line.split()
+        parts = line.split()
+        if parts and ('AM' in line or 'PM' in line or _is_time_token(parts[0])):
             try:
                 if ram_cols:
                     i_free = ram_cols.get('kbmemfree')
                     i_used = ram_cols.get('kbmemused')
                     i_pct = ram_cols.get('%memused')
                     i_commit = ram_cols.get('kbcommit')
-                    if i_pct is None or len(parts) <= i_pct or not parts[i_pct].replace('.', '').isdigit():
+                    if i_pct is None or len(parts) <= i_pct or not parts[i_pct].rstrip('*').replace('.', '', 1).isdigit():
                         continue
-                    kbmemfree = float(parts[i_free]) if i_free is not None and len(parts) > i_free else 0.0
-                    kbmemused = float(parts[i_used]) if i_used is not None and len(parts) > i_used else 0.0
-                    memused_pct = float(parts[i_pct])
-                    kbcommit = float(parts[i_commit]) if i_commit is not None and len(parts) > i_commit else 0.0
+                    kbmemfree = float(parts[i_free].rstrip('*')) if i_free is not None and len(parts) > i_free else 0.0
+                    kbmemused = float(parts[i_used].rstrip('*')) if i_used is not None and len(parts) > i_used else 0.0
+                    memused_pct = float(parts[i_pct].rstrip('*'))
+                    kbcommit = float(parts[i_commit].rstrip('*')) if i_commit is not None and len(parts) > i_commit else 0.0
                 else:
                     # Fallback (no header found): legacy fixed positions (old sysstat w/o kbavail)
-                    if len(parts) < 6 or not parts[2].replace('.', '').isdigit():
+                    if len(parts) < 6 or not parts[2].rstrip('*').replace('.', '', 1).isdigit():
                         continue
-                    kbmemfree = float(parts[2])
-                    kbmemused = float(parts[3])
-                    memused_pct = float(parts[4])
+                    kbmemfree = float(parts[2].rstrip('*'))
+                    kbmemused = float(parts[3].rstrip('*'))
+                    memused_pct = float(parts[4].rstrip('*'))
                     kbcommit = 0.0
                 ram_values.append({'time': parts[0], 'ampm': parts[1], 'kbmemfree': kbmemfree,
                                    'kbmemused': kbmemused, 'memused_pct': memused_pct, 'kbcommit': kbcommit})
@@ -555,7 +563,10 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
             metrics['ram_peak_time'] = ram_peak_time
 
     # Parse DISK (df -h output) - ALL partitions
+    # Long filesystem names (e.g. /dev/mapper/vg_lvm-lv_*) can wrap onto their own line,
+    # so the data row becomes "50G 12G 36G 25% /" with the filesystem on the previous line.
     in_disk_section = False
+    pending_filesystem = None
     physical_persistent_partitions = []  # /dev/sd* only (not tmpfs/devtmpfs)
     for line in lines:
         if 'USAGE DISK' in line:
@@ -563,16 +574,32 @@ def parse_sar_log(log_content: str, hostname: str, ip_address: str, target_date:
             continue
         if in_disk_section and 'END' in line:
             break
+        if in_disk_section and '/' in line and not ('%' in line):
+            # Standalone wrapped filesystem name line (no size/percent data)
+            standalone = line.split()
+            if len(standalone) == 1:
+                pending_filesystem = standalone[0]
+                continue
         if in_disk_section and '/' in line and '%' in line:
             parts = line.split()
             if len(parts) >= 5:
                 try:
-                    filesystem = parts[0]
-                    size = parts[1]
-                    used = parts[2]
-                    avail = parts[3]
-                    use_pct = int(parts[4].replace('%', ''))
-                    mount_point = parts[5] if len(parts) > 5 else ''
+                    if len(parts) == 5 and pending_filesystem:
+                        # Wrapped df row: filesystem name is on the previous line
+                        filesystem = pending_filesystem
+                        size = parts[0]
+                        used = parts[1]
+                        avail = parts[2]
+                        use_pct = int(parts[3].replace('%', ''))
+                        mount_point = parts[4] if len(parts) > 4 else ''
+                        pending_filesystem = None
+                    else:
+                        filesystem = parts[0]
+                        size = parts[1]
+                        used = parts[2]
+                        avail = parts[3]
+                        use_pct = int(parts[4].replace('%', ''))
+                        mount_point = parts[5] if len(parts) > 5 else ''
 
                     # Save ALL partitions
                     metrics['partitions'].append({
@@ -651,6 +678,7 @@ class BatchScanRequest(BaseModel):
     password: Optional[str] = None  # SSH password (optional if private_key provided)
     port: int = 22
     sar_dir: str = "/var/log/sa"
+    mode: Optional[str] = "auto"  # auto/daily/weekly/monthly
     auth_mode: Optional[str] = "sudo"  # root or sudo
     max_workers: int = 50  # Parallel thread count (default 50)
     overwrite: bool = False  # if True, re-parse & UPDATE existing dates (one-time correction)
@@ -710,8 +738,10 @@ def auto_detect_sar_mode(db: Session) -> tuple:
         # Haven't imported today - daily check
         return "daily", 7
     else:
-        # Already imported today - quick check for new files
-        return "daily", 3
+        # Already imported today - quick check for new files. Keep the daily 7-day
+        # window so recent dates are never silently dropped (e.g. a same-day bulk
+        # scan must still pick up a 4-day-old SAR file instead of skipping it).
+        return "daily", 7
 
 
 def calculate_status_and_alert(metrics: dict) -> tuple:
@@ -1329,7 +1359,7 @@ async def batch_scan_all_servers(
                 'password': request.password,
                 'port': request.port,
                 'sar_dir': request.sar_dir,
-                'mode': 'auto',
+                'mode': request.mode or 'auto',
                 'auth_mode': request.auth_mode,
                 'overwrite': request.overwrite,
             }

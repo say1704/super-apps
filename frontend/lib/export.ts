@@ -392,8 +392,10 @@ export async function exportSLAPDF(
   y += 8;
   doc.setFontSize(7);
   doc.setTextColor(120);
-  doc.text('Keterangan: ' + SLA_NOTE + ' Target SLA >= 99% OK, 95-98.9% Warning, < 95% Kritikal. Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelumnya N/A.', margin, y);
-  y += 6;
+  const keteranganNote = 'Keterangan: ' + SLA_NOTE + ' Target SLA >= 99% OK, 95-98.9% Warning, < 95% Kritikal. Uptime server hanya tersedia sejak script SAR baru (10-08-2026); sebelumnya N/A.';
+  const keteranganLines = doc.splitTextToSize(keteranganNote, pageW - 2 * margin);
+  doc.text(keteranganLines, margin, y);
+  y += keteranganLines.length * 3 + 4;
 
   // ── TABLE ──
   const headers = ['No.', 'Hostname', 'Bulan', 'Hari Dipantau', 'Hari Data', 'Tanpa Data', 'SLA %', 'Uptime (saat ini)', 'Tgl Uptime', 'Status', 'Keterangan'];
@@ -419,21 +421,22 @@ export async function exportSLAPDF(
     head: [headers],
     body,
     theme: 'grid',
+    margin: { left: margin, right: margin },
     styles: { fontSize: 7, cellPadding: 2, valign: 'middle' },
     headStyles: { fillColor: navy as any, textColor: 255, fontStyle: 'bold', halign: 'center' },
     alternateRowStyles: { fillColor: [245, 245, 250] },
     columnStyles: {
-      0: { halign: 'center', cellWidth: 10 },
-      1: { halign: 'left', cellWidth: 45 },
+      0: { halign: 'center', cellWidth: 9 },
+      1: { halign: 'left', cellWidth: 38 },
       2: { halign: 'center', cellWidth: 22 },
-      3: { halign: 'center', cellWidth: 20 },
-      4: { halign: 'center', cellWidth: 20 },
-      5: { halign: 'center', cellWidth: 20 },
-      6: { halign: 'center', cellWidth: 20, fontStyle: 'bold' },
-      7: { halign: 'left', cellWidth: 55 },
-      8: { halign: 'center', cellWidth: 30 },
-      9: { halign: 'center', cellWidth: 22, fontStyle: 'bold' },
-      10: { halign: 'left' },
+      3: { halign: 'center', cellWidth: 22 },
+      4: { halign: 'center', cellWidth: 18 },
+      5: { halign: 'center', cellWidth: 18 },
+      6: { halign: 'center', cellWidth: 18, fontStyle: 'bold' },
+      7: { halign: 'left', cellWidth: 40 },
+      8: { halign: 'center', cellWidth: 20 },
+      9: { halign: 'center', cellWidth: 18, fontStyle: 'bold' },
+      10: { halign: 'left', cellWidth: 46 },
     },
     didParseCell: function (celldata) {
       if (celldata.section !== 'body') return;
