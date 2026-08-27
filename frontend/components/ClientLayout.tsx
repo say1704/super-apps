@@ -12,7 +12,7 @@ import CommandPalette from '@/components/CommandPalette';
 import ShortcutsHelp from '@/components/ShortcutsHelp';
 import SessionTimeoutModal from '@/components/SessionTimeoutModal';
 import AiChat from '@/components/AiChat';
-import { apiRequest } from '@/lib/auth';
+import { useAuth, apiRequest } from '@/lib/auth';
 
 const SESSION_TIMEOUT = 15 * 60;
 const WARNING_TIME = 2 * 60;
@@ -21,6 +21,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
   const pathname = usePathname();
   const router = useRouter();
   const isAuthPage = pathname === '/login' || pathname === '/reset-password' || pathname === '/register';
+  const { logout } = useAuth();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
@@ -32,9 +33,8 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
 
   const handleTimeout = useCallback(() => {
     setShowTimeoutModal(false);
-    apiRequest('/auth/logout', { method: 'POST' }).catch(() => {});
-    router.push('/login');
-  }, [router]);
+    logout();
+  }, [logout]);
 
   const { remaining, reset } = useInactivityTimer({
     timeout: SESSION_TIMEOUT,
@@ -61,9 +61,8 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
 
   const handleLogout = useCallback(() => {
     setShowTimeoutModal(false);
-    apiRequest('/auth/logout', { method: 'POST' }).catch(() => {});
-    router.push('/login');
-  }, [router]);
+    logout();
+  }, [logout]);
 
   useKeyboardShortcuts({
     'ctrl+k': () => setCommandPaletteOpen(true),

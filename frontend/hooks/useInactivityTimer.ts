@@ -53,6 +53,18 @@ export function useInactivityTimer({
   useEffect(() => {
     if (!enabled) return;
 
+    // Fresh inactivity clock whenever the timer (re)activates (e.g. after a
+    // logout → re-login). A stale lastActivityRef/warnedRef from a previous
+    // warning otherwise triggers onTimeout within ~1s of the next login.
+    lastActivityRef.current = Date.now();
+    warnedRef.current = false;
+    setIsWarning(false);
+    setRemaining(timeout);
+  }, [enabled, timeout]);
+
+  useEffect(() => {
+    if (!enabled) return;
+
     timerRef.current = setInterval(() => {
       const elapsed = Math.floor((Date.now() - lastActivityRef.current) / 1000);
       const left = Math.max(0, timeout - elapsed);
