@@ -185,6 +185,23 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
     selectDate(invDates[nextIdx]);
   };
 
+  // Export CSV inventory (tanggal yang sedang dilihat) — JAR & software terpisah (skema beda).
+  const exportJarsCSV = () => {
+    if (!invJars.length) return;
+    const rows = invJars.map((j: any) => ({
+      User: j.proc_user || '', PID: j.pid ?? '', Start: j.start_token || '',
+      JAR: j.jar_name || '', Path: j.jar_path || '',
+    }));
+    downloadCSV(rows, `Inventory_JAR_${hostname}_${viewDate || ''}.csv`);
+  };
+  const exportSoftwareCSV = () => {
+    if (!invSoftware.length) return;
+    const rows = invSoftware.map((s: any) => ({
+      Software: s.name || '', Version: s.version || '', Arch: s.arch || '', Executable: s.executable || '',
+    }));
+    downloadCSV(rows, `Inventory_Software_${hostname}_${viewDate || ''}.csv`);
+  };
+
   const loadCompare = async (from: string, to: string) => {
     if (!from || !to) return;
     setCmpLoading(true);
@@ -723,6 +740,65 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         doc.setTextColor(120);
         doc.text('Proyeksi kapasitas belum tersedia — lakukan scan minimal 2 hari untuk menghasilkan proyeksi.', 14, y);
         y += 8;
+      }
+
+      // ── DAFTAR APPS (INVENTORY) ─────────────────────────
+      // Pakai data tanggal yang sedang dilihat; bila tab Apps belum dibuka, ambil snapshot terbaru.
+      let expSnap = invSnapshot, expJars = invJars, expSw = invSoftware, expDate = viewDate;
+      if (!expSnap) {
+        try {
+          const inv = await apiRequest(`/api/application-inventory/servers/${hostname}`);
+          expSnap = inv.snapshot; expJars = inv.jars || []; expSw = inv.software || [];
+          expDate = inv.snapshot?.collection_date || '';
+        } catch { /* inventory opsional */ }
+      }
+      if (expSnap && (expJars.length > 0 || expSw.length > 0)) {
+        doc.addPage();
+        const ay = 20;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(F.section);
+        doc.setTextColor(36, 72, 141);
+        doc.text(`Daftar Aplikasi & Software — ${expDate || expSnap.collection_date}`, 14, ay);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(F.meta);
+        doc.setTextColor(120);
+        doc.text(
+          `JAR Running: ${expSnap.total_jars_running}  ·  Software: ${expSnap.total_software}  ·  OS: ${pdfClean(expSnap.os_package_type || '-')} (${pdfClean(expSnap.package_manager || '-')})`,
+          14, ay + 5
+        );
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(F.note);
+        doc.setTextColor(60, 60, 60);
+        doc.text(`Aplikasi Java/JAR (${expJars.length})`, 14, ay + 12);
+        autoTable(doc, {
+          startY: ay + 14,
+          head: [['User', 'PID', 'Start', 'JAR / Main Class', 'Path / Classpath']],
+          body: expJars.map((j: any) => [
+            pdfClean(j.proc_user || ''), String(j.pid ?? ''), pdfClean(j.start_token || ''),
+            pdfClean(j.jar_name || ''), pdfClean(j.jar_path || ''),
+          ]),
+          styles: { fontSize: 6.5, overflow: 'linebreak', cellPadding: 1.5 },
+          headStyles: { fillColor: [59, 130, 246], fontSize: 7 },
+          columnStyles: { 1: { cellWidth: 14 }, 2: { cellWidth: 16 }, 4: { cellWidth: 130 } },
+          margin: { left: 14, right: 14 },
+        });
+
+        const swY = (doc as any).lastAutoTable.finalY + 8;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(F.note);
+        doc.setTextColor(60, 60, 60);
+        doc.text(`Software Terinstall (${expSw.length})`, 14, swY);
+        autoTable(doc, {
+          startY: swY + 2,
+          head: [['Software', 'Version', 'Arch', 'Executable']],
+          body: expSw.map((s: any) => [
+            pdfClean(s.name || ''), pdfClean(s.version || ''), pdfClean(s.arch || ''), pdfClean(s.executable || ''),
+          ]),
+          styles: { fontSize: 6.5, overflow: 'linebreak', cellPadding: 1.5 },
+          headStyles: { fillColor: [124, 58, 237], fontSize: 7 },
+          margin: { left: 14, right: 14 },
+        });
       }
 
       // ── FOOTER ──────────────────────────────────────────
@@ -1707,6 +1783,12 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
                       className="px-3 py-1.5 rounded bg-gray-100 dark:bg-slate-700 text-sm hover:bg-gray-200 dark:hover:bg-slate-600 disabled:opacity-40" title="Hari sesudahnya (ada data)">▶</button>
                   </div>
                   <div className="text-xs text-gray-400 dark:text-gray-500">{invDates.length} tanggal tersedia{invLoading ? ' · memuat…' : ''}</div>
+                  <div className="ml-auto flex gap-2">
+                    <button onClick={exportJarsCSV} disabled={!invJars.length}
+                      className="px-3 py-1.5 rounded bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-40" title="Export JAR (CSV) untuk tanggal ini">⬇ JAR CSV</button>
+                    <button onClick={exportSoftwareCSV} disabled={!invSoftware.length}
+                      className="px-3 py-1.5 rounded bg-green-600 text-white text-xs font-medium hover:bg-green-700 disabled:opacity-40" title="Export Software (CSV) untuk tanggal ini">⬇ Software CSV</button>
+                  </div>
                 </div>
 
                 {!invSnapshot ? (
