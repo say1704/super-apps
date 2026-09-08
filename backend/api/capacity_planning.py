@@ -665,6 +665,7 @@ class FetchSARRequest(BaseModel):
     private_key: Optional[str] = None
     port: int = 22
     sar_dir: str = "/var/log/sa"
+    app_dir: Optional[str] = None  # override folder log inventory; default = sar_dir (folder yang sama)
     mode: Optional[str] = "auto"  # auto/daily/weekly/monthly
     auth_mode: Optional[str] = "root"  # root or sudo
     overwrite: bool = False  # if True, re-parse & UPDATE existing dates (one-time correction)
@@ -678,6 +679,7 @@ class BatchScanRequest(BaseModel):
     password: Optional[str] = None  # SSH password (optional if private_key provided)
     port: int = 22
     sar_dir: str = "/var/log/sa"
+    app_dir: Optional[str] = None  # override folder log inventory; default = sar_dir (folder yang sama)
     mode: Optional[str] = "auto"  # auto/daily/weekly/monthly
     auth_mode: Optional[str] = "sudo"  # root or sudo
     max_workers: int = 50  # Parallel thread count (default 50)
@@ -810,6 +812,92 @@ def calculate_status_and_alert(metrics: dict) -> tuple:
 # ==================== FETCH SAR DATA ====================
 
 import threading
+
+
+def _import_inventory_pass(ssh, db, request_data: dict, user_data: dict, ssh_username: str, ssh_password: str) -> dict:
+    """Proses ke-2 di alur SAR: scan & parse `*_application-*.log` ke tabel inventory.
+
+    Menggunakan sesi SSH yang sama. Dirancang agar TIDAK pernah menggagalkan import SAR:
+    pemanggil membungkusnya lagi dengan try/except. Return dict ringkasan.
+    """
+    from models import InventorySnapshot, InventoryJar, InventorySoftware
+    from utils.inventory_parser import parse_inventory_log
+
+    summary = {"files_found": 0, "imported": 0, "skipped_existing": 0, "errors": []}
+    # Log inventory (*_application-*.log) berada di folder yang sama dengan SAR.
+    # `app_dir` hanya override opsional; default = sar_dir.
+    app_dir = (request_data.get('app_dir') or request_data.get('sar_dir') or '').strip()
+    if not app_dir:
+        return summary
+
+    scan_cmd = f"ls -1 {_sanitize_path(app_dir)}/"
+    raw_output, err_ls, _ = _exec_remote(ssh, scan_cmd, ssh_username, ssh_password, timeout=30)
+    raw_lines = [f for f in (raw_output or '').split('\n') if f.strip()]
+    filtered = [f for f in raw_lines if 'application-' in f and f.endswith('.log')]
+    file_list = [f if f.startswith('/') else f"{app_dir.rstrip('/')}/{f}" for f in filtered]
+    summary["files_found"] = len(file_list)
+    if not file_list:
+        logger.info(f"Inventory: tidak ada *_application-*.log di {app_dir} (stderr={(err_ls or '')[:200]!r})")
+        return summary
+
+    overwrite = bool(request_data.get('overwrite', False))
+    created_by = user_data.get('user_id')
+    owner_role = user_data.get('role')
+
+    # Pre-load pasangan (hostname, collection_date) yang sudah ada untuk skip cepat.
+    existing = set(db.query(InventorySnapshot.hostname, InventorySnapshot.collection_date).all())
+
+    for file_path in file_list:
+        try:
+            read_cmd = f"cat {_sanitize_path(file_path)}"
+            content, err_cat, _ = _exec_remote(ssh, read_cmd, ssh_username, ssh_password, timeout=30)
+            if not content:
+                if err_cat:
+                    summary["errors"].append(f"{file_path}: {err_cat[:120]}")
+                continue
+            filename = file_path.rsplit('/', 1)[-1]
+            parsed = parse_inventory_log(filename, content)
+            if not parsed:
+                continue
+            snap = parsed["snapshot"]
+            key = (snap["hostname"], snap["collection_date"])
+            if key in existing and not overwrite:
+                summary["skipped_existing"] += 1
+                continue
+
+            # Replace: hapus snapshot + child rows lama untuk pasangan ini, lalu insert baru.
+            for _model in (InventoryJar, InventorySoftware, InventorySnapshot):
+                db.query(_model).filter(
+                    _model.hostname == snap["hostname"],
+                    _model.collection_date == snap["collection_date"],
+                ).delete(synchronize_session=False)
+
+            db.add(InventorySnapshot(
+                hostname=snap["hostname"],
+                ip_address=request_data.get('hostname'),
+                collection_date=snap["collection_date"],
+                collection_time=snap["collection_time"],
+                os_package_type=snap["os_package_type"],
+                package_manager=snap["package_manager"],
+                total_jars_running=snap["total_jars_running"],
+                total_software=snap["total_software"],
+                log_file=snap["log_file"],
+                created_by=created_by,
+                owner_role=owner_role,
+            ))
+            for j in parsed["jars"]:
+                db.add(InventoryJar(**j))
+            for s in parsed["software"]:
+                db.add(InventorySoftware(**s))
+            existing.add(key)
+            summary["imported"] += 1
+        except Exception as e:
+            logger.error(f"Inventory parse error {file_path}: {e}")
+            summary["errors"].append(f"{file_path}: {str(e)[:120]}")
+
+    db.commit()
+    return summary
+
 
 def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
     """Background task to scan and import SAR data with progress tracking"""
@@ -1215,6 +1303,19 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
         logger.info(f"Committing {imported_count} records to DB...")
         db.commit()
 
+        # ---- Proses ke-2: Application & Software Inventory ----
+        # Berjalan pada sesi SSH yang sama; TIDAK boleh menggagalkan import SAR.
+        inventory_summary = {"files_found": 0, "imported": 0, "skipped_existing": 0, "errors": []}
+        try:
+            tracker.update(90, 100, "Scanning application inventory...")
+            inventory_summary = _import_inventory_pass(
+                ssh, db, request_data, user_data, ssh_username, ssh_password
+            )
+            logger.info(f"Inventory pass: {inventory_summary}")
+        except Exception as e:
+            logger.error(f"Inventory pass failed (SAR import tetap sukses): {e}")
+            inventory_summary["errors"].append(str(e)[:200])
+
         # Mark as complete and store results
         tracker.update(95, 100, "Saving results...")
         tracker.complete()
@@ -1239,7 +1340,8 @@ def scan_and_import_sar(operation_id: str, request_data: dict, user_data: dict):
                     "network_interfaces_saved": network_count,
                     "skipped_existing": skipped_count,
                     "skipped_old_date": skipped_old,
-                    "errors": errors
+                    "errors": errors,
+                    "inventory": inventory_summary
                 }
             }
         }
@@ -1274,13 +1376,14 @@ async def fetch_sar_data(
         'private_key': request.private_key,
         'port': request.port,
         'sar_dir': request.sar_dir,
+        'app_dir': request.app_dir,
         'mode': request.mode,
         'auth_mode': request.auth_mode,
         'overwrite': request.overwrite,
     }
 
-    user_data = {'username': current_user.username}
-    
+    user_data = {'username': current_user.username, 'user_id': current_user.id, 'role': current_user.role}
+
     # Start background task
     thread = threading.Thread(
         target=scan_and_import_sar,
@@ -1288,7 +1391,7 @@ async def fetch_sar_data(
         daemon=True
     )
     thread.start()
-    
+
     log_activity(db, current_user.id, "CREATE", "capacity", f"Initiated SAR scan for {request.hostname}")
     
     return {
@@ -1325,7 +1428,7 @@ async def batch_scan_all_servers(
 
     operation_id = f"batch-{uuid.uuid4()}"
 
-    user_data = {'username': current_user.username}
+    user_data = {'username': current_user.username, 'user_id': current_user.id, 'role': current_user.role}
     server_list = [s.strip() for s in request.servers if s.strip()]
 
     if not server_list:
@@ -1359,6 +1462,7 @@ async def batch_scan_all_servers(
                 'password': request.password,
                 'port': request.port,
                 'sar_dir': request.sar_dir,
+                'app_dir': request.app_dir,
                 'mode': request.mode or 'auto',
                 'auth_mode': request.auth_mode,
                 'overwrite': request.overwrite,
