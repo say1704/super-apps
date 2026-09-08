@@ -9,6 +9,12 @@ const dispatcher = new Agent({
   },
 });
 
+// Per-request proxy logging is very chatty (one line per API call) and bloats
+// frontend-out.log. Keep it off by default; enable with PROXY_DEBUG=1. Errors are
+// always logged.
+const PROXY_DEBUG = process.env.PROXY_DEBUG === '1';
+const dbg = (...args: any[]) => { if (PROXY_DEBUG) console.log(...args); };
+
 // ── Backend worker pool (load balancing) ─────────────────────────────────────
 // ALL API traffic funnels through this proxy, so we distribute it across the
 // backend uvicorn workers here. Default pool = the 5 PM2 workers (ports
@@ -135,7 +141,7 @@ async function proxyRequest(request: NextRequest) {
       const buffer = await request.arrayBuffer();
       body = buffer;
       bodySize = buffer.byteLength;
-      console.log(`[Proxy] ${request.method} ${path} - Body: ${(bodySize / 1024).toFixed(1)} KB, CT: ${contentType}`);
+      dbg(`[Proxy] ${request.method} ${path} - Body: ${(bodySize / 1024).toFixed(1)} KB, CT: ${contentType}`);
     } catch (err: any) {
       console.error(`[Proxy] Body read failed ${request.method} ${path}:`, err.message);
       return NextResponse.json(
@@ -165,11 +171,11 @@ async function proxyRequest(request: NextRequest) {
   let lastError: any = null;
   for (const workerIdx of attemptOrder) {
     const url = `${BACKEND_POOL[workerIdx]}${path}${search}`;
-    console.log(`[Proxy] Forwarding to worker ${workerIdx} (${BACKEND_POOL[workerIdx]}): ${path}`);
+    dbg(`[Proxy] Forwarding to worker ${workerIdx} (${BACKEND_POOL[workerIdx]}): ${path}`);
     try {
       const response = await undiciFetch(url, fetchOptions);
 
-      console.log(`[Proxy] Response status: ${response.status} for ${path} (worker ${workerIdx})`);
+      dbg(`[Proxy] Response status: ${response.status} for ${path} (worker ${workerIdx})`);
 
       // Log response body for errors
       let responseBody = '';

@@ -50,7 +50,8 @@ function loadOrCreateModelServerKey() {
 const modelServerApiKey = loadOrCreateModelServerKey();
 
 const baseArgs =
-  "-m uvicorn main:app --host 127.0.0.1 --timeout-keep-alive 120" + sslArgs;
+  "-m uvicorn main:app --host 127.0.0.1 --timeout-keep-alive 120 --log-level warning --no-access-log" +
+  sslArgs;
 
 module.exports = {
   apps: [
