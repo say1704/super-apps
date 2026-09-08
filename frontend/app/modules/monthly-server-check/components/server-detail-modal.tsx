@@ -113,7 +113,7 @@ interface ServerDetailModalProps {
 const COLORS = ['#3b82f6', '#ef4444', '#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 
 export default function ServerDetailModal({ hostname, onClose }: ServerDetailModalProps) {
-  const [activeTab, setActiveTab] = useState<'history' | 'charts' | 'projection' | 'info'>('history');
+  const [activeTab, setActiveTab] = useState<'history' | 'charts' | 'projection' | 'info' | 'apps'>('history');
   const [records, setRecords] = useState<DailyRecord[]>([]);
   const [partitionSummary, setPartitionSummary] = useState<PartitionSummary[]>([]);
   const [projections, setProjections] = useState<ProjectionData[]>([]);
@@ -129,6 +129,75 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
   const [serverSLARows, setServerSLARows] = useState<any[]>([]);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // ===== Application & Software Inventory (tab "Daftar Apps") =====
+  const [invSnapshot, setInvSnapshot] = useState<any>(null);
+  const [invJars, setInvJars] = useState<any[]>([]);
+  const [invSoftware, setInvSoftware] = useState<any[]>([]);
+  const [invDates, setInvDates] = useState<string[]>([]);
+  const [invSearch, setInvSearch] = useState('');
+  const [cmpResult, setCmpResult] = useState<any>(null);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [viewDate, setViewDate] = useState<string>('');   // tanggal snapshot yang sedang dilihat
+  const [cmpBaseDate, setCmpBaseDate] = useState<string>('');  // tanggal pembanding (sebelumnya)
+  const [invLoading, setInvLoading] = useState(false);
+
+  // Ambil snapshot inventory untuk tanggal tertentu (default: terbaru bila kosong).
+  const loadSnapshot = async (date?: string) => {
+    setInvLoading(true);
+    try {
+      const q = date ? `?date=${date}` : '';
+      const inv = await apiRequest(`/api/application-inventory/servers/${hostname}${q}`);
+      setInvSnapshot(inv.snapshot);
+      setInvJars(inv.jars || []);
+      setInvSoftware(inv.software || []);
+    } catch (e) {
+      console.error('Gagal memuat snapshot inventory:', e);
+      setInvSnapshot(null);
+      setInvJars([]);
+      setInvSoftware([]);
+    } finally {
+      setInvLoading(false);
+    }
+  };
+
+  // Satu kalender, dua fungsi: lihat snapshot tanggal itu + otomatis komparasi vs tanggal sebelumnya.
+  const selectDate = (date: string, dates: string[] = invDates) => {
+    if (!date) return;
+    setViewDate(date);
+    loadSnapshot(date);
+    const idx = dates.indexOf(date);
+    const prev = idx >= 0 ? dates[idx + 1] : undefined;   // tanggal koleksi lebih lama
+    setCmpBaseDate(prev || '');
+    if (prev) {
+      loadCompare(prev, date);
+    } else {
+      setCmpResult(null);
+    }
+  };
+
+  // Loncat ke tanggal ber-data berikut/sebelumnya (invDates desc: [terbaru..terlama]).
+  const stepDate = (dir: 'prev' | 'next') => {
+    if (!invDates.length) return;
+    const idx = invDates.indexOf(viewDate);
+    const nextIdx = dir === 'prev' ? idx + 1 : idx - 1;   // prev = lebih lama, next = lebih baru
+    if (idx === -1 || nextIdx < 0 || nextIdx >= invDates.length) return;
+    selectDate(invDates[nextIdx]);
+  };
+
+  const loadCompare = async (from: string, to: string) => {
+    if (!from || !to) return;
+    setCmpLoading(true);
+    try {
+      const res = await apiRequest(`/api/application-inventory/servers/${hostname}/compare?from=${from}&to=${to}`);
+      setCmpResult(res);
+    } catch (e) {
+      console.error('Gagal komparasi inventory:', e);
+      setCmpResult(null);
+    } finally {
+      setCmpLoading(false);
+    }
+  };
 
   const slaRange = () => {
     const to = new Date().toISOString().split('T')[0];
@@ -176,6 +245,27 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
         setInfoDate(result.latest_date);
         const slaRes = await apiRequest(`/api/v1/capacity-reports/sla-export?from_date=${slaRange().from}&to_date=${slaRange().to}`).catch(() => ({ rows: [] }));
         setServerSLARows((slaRes.rows || []).filter((r: any) => r.hostname === hostname));
+      } else if (activeTab === 'apps') {
+        const [inv, datesRes] = await Promise.all([
+          apiRequest(`/api/application-inventory/servers/${hostname}`),
+          apiRequest(`/api/application-inventory/servers/${hostname}/dates`).catch(() => ({ dates: [] })),
+        ]);
+        setInvSnapshot(inv.snapshot);
+        setInvJars(inv.jars || []);
+        setInvSoftware(inv.software || []);
+        const dates: string[] = datesRes.dates || [];
+        setInvDates(dates);
+        // Satu kalender: lihat tanggal terbaru + otomatis komparasi vs tanggal sebelumnya.
+        const latest = inv.snapshot?.collection_date || dates[0] || '';
+        setViewDate(latest);
+        const idx = dates.indexOf(latest);
+        const prev = idx >= 0 ? dates[idx + 1] : undefined;
+        setCmpBaseDate(prev || '');
+        if (prev) {
+          loadCompare(prev, latest);
+        } else {
+          setCmpResult(null);
+        }
       } else {
         // Projection tab
         try {
@@ -782,6 +872,12 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
               className={`px-6 py-2 rounded-lg font-medium transition-colors ${activeTab === 'info' ? 'bg-blue-500 text-white shadow-lg' : 'bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-600'}`}
             >
               ℹ️ Informasi Server
+            </button>
+            <button
+              onClick={() => { setActiveTab('apps'); setPage(1); }}
+              className={`px-6 py-2 rounded-lg font-medium transition-colors ${activeTab === 'apps' ? 'bg-blue-500 text-white shadow-lg' : 'bg-white dark:bg-slate-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-600'}`}
+            >
+              🧩 Daftar Apps
             </button>
           </div>
         </div>
@@ -1580,6 +1676,191 @@ export default function ServerDetailModal({ hostname, onClose }: ServerDetailMod
                 </div>
               )}
             </>
+          ) : activeTab === 'apps' ? (
+            /* Apps Tab - Application & Software Inventory */
+            invDates.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="text-6xl mb-4">🧩</div>
+                <p className="text-gray-500 dark:text-gray-400">Belum ada data inventory untuk server ini.</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-2">
+                  Jalankan <strong>Bulk Import</strong> / <strong>Add Server</strong> — proses inventory
+                  (<code>*_application-*.log</code>) berjalan bersama SAR.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Kalender: lihat inventory tanggal sebelumnya */}
+                <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800 flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">📅 Lihat Tanggal</label>
+                    <input type="date" value={viewDate}
+                      min={invDates[invDates.length - 1]} max={invDates[0]}
+                      onChange={(e) => selectDate(e.target.value)}
+                      className="px-3 py-1.5 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-sm" />
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={() => stepDate('prev')}
+                      disabled={invDates.indexOf(viewDate) === -1 || invDates.indexOf(viewDate) >= invDates.length - 1}
+                      className="px-3 py-1.5 rounded bg-gray-100 dark:bg-slate-700 text-sm hover:bg-gray-200 dark:hover:bg-slate-600 disabled:opacity-40" title="Hari sebelumnya (ada data)">◀</button>
+                    <button onClick={() => stepDate('next')}
+                      disabled={invDates.indexOf(viewDate) <= 0}
+                      className="px-3 py-1.5 rounded bg-gray-100 dark:bg-slate-700 text-sm hover:bg-gray-200 dark:hover:bg-slate-600 disabled:opacity-40" title="Hari sesudahnya (ada data)">▶</button>
+                  </div>
+                  <div className="text-xs text-gray-400 dark:text-gray-500">{invDates.length} tanggal tersedia{invLoading ? ' · memuat…' : ''}</div>
+                </div>
+
+                {!invSnapshot ? (
+                  <div className="text-center py-12 text-gray-400 dark:text-gray-500">
+                    Tidak ada data inventory untuk tanggal ini. Gunakan ◀/▶ atau pilih tanggal lain.
+                  </div>
+                ) : (
+                <>
+                {/* Header snapshot */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">JAR Running</div>
+                    <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{invSnapshot.total_jars_running}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-purple-50 dark:bg-purple-900/20">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Software Terinstall</div>
+                    <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">{invSnapshot.total_software}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-gray-50 dark:bg-slate-700">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">OS / Package Manager</div>
+                    <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">{invSnapshot.os_package_type || '-'} · {invSnapshot.package_manager || '-'}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-gray-50 dark:bg-slate-700">
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Collection Time</div>
+                    <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">{invSnapshot.collection_time || invSnapshot.collection_date}</div>
+                  </div>
+                </div>
+
+                {/* Komparasi harian (otomatis vs tanggal sebelumnya) */}
+                <div className="p-4 rounded-lg border border-gray-200 dark:border-slate-600 bg-white dark:bg-slate-800">
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                    🔀 Perubahan {cmpBaseDate ? `vs ${cmpBaseDate}` : 'antar-tanggal'}
+                    {cmpLoading && <span className="text-xs font-normal text-gray-400 ml-2">memuat…</span>}
+                  </h3>
+
+                  {!cmpBaseDate && (
+                    <p className="text-sm text-gray-400 dark:text-gray-500 mt-3">
+                      Tanggal paling awal — tidak ada tanggal pembanding sebelumnya.
+                    </p>
+                  )}
+
+                  {cmpResult && (
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {/* JAR diff */}
+                      <div>
+                        <div className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                          JAR: <span className="text-green-600">+{cmpResult.summary.jar_added}</span> · <span className="text-red-600">−{cmpResult.summary.jar_removed}</span>
+                        </div>
+                        <ul className="text-xs space-y-1 max-h-40 overflow-y-auto">
+                          {cmpResult.jars.added.map((j: any, i: number) => (
+                            <li key={`ja${i}`} className="text-green-700 dark:text-green-400">▲ {j.jar_name}</li>
+                          ))}
+                          {cmpResult.jars.removed.map((j: any, i: number) => (
+                            <li key={`jr${i}`} className="text-red-700 dark:text-red-400">▼ {j.jar_name}</li>
+                          ))}
+                          {cmpResult.summary.jar_added === 0 && cmpResult.summary.jar_removed === 0 && (
+                            <li className="text-gray-400">Tidak ada perubahan JAR.</li>
+                          )}
+                        </ul>
+                      </div>
+                      {/* Software diff */}
+                      <div>
+                        <div className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                          Software: <span className="text-green-600">+{cmpResult.summary.sw_added}</span> · <span className="text-red-600">−{cmpResult.summary.sw_removed}</span> · <span className="text-yellow-600">~{cmpResult.summary.sw_changed}</span>
+                        </div>
+                        <ul className="text-xs space-y-1 max-h-40 overflow-y-auto">
+                          {cmpResult.software.added.map((s: any, i: number) => (
+                            <li key={`sa${i}`} className="text-green-700 dark:text-green-400">▲ {s.name} ({s.version})</li>
+                          ))}
+                          {cmpResult.software.removed.map((s: any, i: number) => (
+                            <li key={`sr${i}`} className="text-red-700 dark:text-red-400">▼ {s.name} ({s.version})</li>
+                          ))}
+                          {cmpResult.software.changed.map((s: any, i: number) => (
+                            <li key={`sc${i}`} className="text-yellow-700 dark:text-yellow-400">~ {s.name}: {s.from_version} → {s.to_version}</li>
+                          ))}
+                          {cmpResult.summary.sw_added === 0 && cmpResult.summary.sw_removed === 0 && cmpResult.summary.sw_changed === 0 && (
+                            <li className="text-gray-400">Tidak ada perubahan software.</li>
+                          )}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Search */}
+                <input value={invSearch} onChange={(e) => setInvSearch(e.target.value)}
+                  placeholder="Cari JAR / software…"
+                  className="w-full px-3 py-2 rounded border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-sm" />
+
+                {/* JAR table */}
+                <div>
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white mb-2">☕ JAR Running ({invJars.length})</h3>
+                  <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-slate-600">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-50 dark:bg-slate-700">
+                        <tr>
+                          <th className="px-3 py-2 text-left">User</th>
+                          <th className="px-3 py-2 text-left">PID</th>
+                          <th className="px-3 py-2 text-left">Start</th>
+                          <th className="px-3 py-2 text-left">JAR</th>
+                          <th className="px-3 py-2 text-left">Path</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invJars.filter((j: any) => {
+                          const q = invSearch.toLowerCase();
+                          return !q || `${j.jar_name || ''} ${j.jar_path || ''} ${j.proc_user || ''}`.toLowerCase().includes(q);
+                        }).map((j: any) => (
+                          <tr key={j.id} className="border-t border-gray-100 dark:border-slate-700" title={j.command_raw || undefined}>
+                            <td className="px-3 py-2">{j.proc_user}</td>
+                            <td className="px-3 py-2 font-mono">{j.pid}</td>
+                            <td className="px-3 py-2">{j.start_token}</td>
+                            <td className="px-3 py-2 font-medium">{j.jar_name}</td>
+                            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 break-all">{j.jar_path}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Software table */}
+                <div>
+                  <h3 className="text-base font-bold text-gray-900 dark:text-white mb-2">📦 Software Terinstall ({invSoftware.length})</h3>
+                  <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-slate-600">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-gray-50 dark:bg-slate-700">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Software</th>
+                          <th className="px-3 py-2 text-left">Version</th>
+                          <th className="px-3 py-2 text-left">Arch</th>
+                          <th className="px-3 py-2 text-left">Executable</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {invSoftware.filter((s: any) => {
+                          const q = invSearch.toLowerCase();
+                          return !q || `${s.name || ''} ${s.version || ''} ${s.executable || ''}`.toLowerCase().includes(q);
+                        }).map((s: any) => (
+                          <tr key={s.id} className="border-t border-gray-100 dark:border-slate-700">
+                            <td className="px-3 py-2 font-medium">{s.name}</td>
+                            <td className="px-3 py-2 font-mono text-xs">{s.version}</td>
+                            <td className="px-3 py-2">{s.arch}</td>
+                            <td className="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400 break-all">{s.executable}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                </>
+                )}
+              </div>
+            )
           ) : null}
         </div>
       </div>

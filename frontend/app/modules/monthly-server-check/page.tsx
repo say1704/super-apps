@@ -1153,7 +1153,7 @@ export default function MonthlyServerCheckModule() {
                 placeholder="e.g., /root/log_job atau /var/log/sa"
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
               />
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Auto-Scan: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">*_daily-*.log</code></p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Auto-Scan folder ini: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">*_daily-*.log</code> (SAR) + <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">*_application-*.log</code> (inventory → tab "Daftar Apps")</p>
             </div>
           </div>
           <div className="mt-4 flex gap-2">
