@@ -4,11 +4,26 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiRequest } from '@/lib/auth';
 import { useToast } from '@/components/toast';
-import ExportButton from '@/components/ExportButton';
+import { exportComplianceReportPDF, exportToCSV } from '@/lib/export';
 import SummaryCard from './components/summary-card';
 import ReportTable from './components/report-table';
 
-type TabType = 'daily' | 'weekly' | 'monthly';
+type TabType = 'daily' | 'weekly' | 'monthly' | 'hostrisk';
+
+interface TrendMetric { now: number; prev: number; delta: number }
+type TrendBlock = Record<string, TrendMetric>;
+
+interface HostRiskRow {
+  host: string; score: number; signal_count: number;
+  ssh_failed: number; capacity_alert: number; vuln_high: number;
+  backup_critical: number; irmc_fail: number; incident_open: number;
+}
+interface HostRiskReport {
+  period: { from: string; to: string };
+  total_hosts_flagged: number;
+  multi_signal_hosts: number;
+  hosts: HostRiskRow[];
+}
 
 interface DailyReport {
   date: string;
@@ -26,6 +41,7 @@ interface WeeklyReport {
   risk: { total: number; overdue: number; by_status: Record<string, number> };
   activity: { total: number; by_module: Record<string, number> };
   backup: { success_rate: number; total_records: number; active_servers: number; alert_count: number };
+  trend?: TrendBlock;
 }
 
 interface MonthlyReport {
@@ -37,6 +53,7 @@ interface MonthlyReport {
   backup: { success_rate: number; total_records: number; total_volume_gb: number; active_servers: number };
   capacity: { total: number; ok: number; warning: number; critical: number };
   quality: { total: number; by_work_unit: Record<string, number> };
+  trend?: TrendBlock;
 }
 
 function getStatusBadge(status: string) {
@@ -64,9 +81,17 @@ export default function ReportsModule() {
   const [daily, setDaily] = useState<DailyReport | null>(null);
   const [weekly, setWeekly] = useState<WeeklyReport | null>(null);
   const [monthly, setMonthly] = useState<MonthlyReport | null>(null);
+  const [hostrisk, setHostrisk] = useState<HostRiskReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [fetchingCapacity, setFetchingCapacity] = useState(false);
   const router = useRouter();
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString().split('T')[0];
+  // Daily pakai satu tanggal; weekly/monthly/hostrisk pakai rentang from..to.
+  const [dailyDate, setDailyDate] = useState(todayStr);
+  const [rangeFrom, setRangeFrom] = useState(daysAgo(7));
+  const [rangeTo, setRangeTo] = useState(todayStr);
 
   const handleScanSSH = async () => {
     setScanning(true);
@@ -92,84 +117,122 @@ export default function ReportsModule() {
     }
   };
 
-  const today = new Date().toISOString().split('T')[0];
-
   const fetchDaily = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await apiRequest(`/api/reports/daily?date=${today}`);
+      const result = await apiRequest(`/api/reports/daily?date=${dailyDate}`);
       setDaily(result);
     } catch {
       toast.error('Failed to load daily report');
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, [dailyDate]);
 
   const fetchWeekly = useCallback(async () => {
     setLoading(true);
     try {
-      const to = today;
-      const from = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
-      const result = await apiRequest(`/api/reports/weekly?from=${from}&to=${to}`);
+      const result = await apiRequest(`/api/reports/weekly?from=${rangeFrom}&to=${rangeTo}`);
       setWeekly(result);
     } catch {
       toast.error('Failed to load weekly report');
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, [rangeFrom, rangeTo]);
 
   const fetchMonthly = useCallback(async () => {
     setLoading(true);
     try {
-      const to = today;
-      const from = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
-      const result = await apiRequest(`/api/reports/monthly?from=${from}&to=${to}`);
+      const result = await apiRequest(`/api/reports/monthly?from=${rangeFrom}&to=${rangeTo}`);
       setMonthly(result);
     } catch {
       toast.error('Failed to load monthly report');
     } finally {
       setLoading(false);
     }
-  }, [today]);
+  }, [rangeFrom, rangeTo]);
+
+  const fetchHostRisk = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await apiRequest(`/api/reports/host-risk?from=${rangeFrom}&to=${rangeTo}`);
+      setHostrisk(result);
+    } catch {
+      toast.error('Failed to load host risk report');
+    } finally {
+      setLoading(false);
+    }
+  }, [rangeFrom, rangeTo]);
 
   useEffect(() => {
     if (activeTab === 'daily') fetchDaily();
     else if (activeTab === 'weekly') fetchWeekly();
-    else fetchMonthly();
-  }, [activeTab]);
+    else if (activeTab === 'monthly') fetchMonthly();
+    else fetchHostRisk();
+  }, [activeTab, fetchDaily, fetchWeekly, fetchMonthly, fetchHostRisk]);
 
-  const tabLabels: Record<TabType, string> = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+  const tabLabels: Record<TabType, string> = { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', hostrisk: 'Host Risk' };
 
-  const getExportData = () => {
-    if (!daily && !weekly && !monthly) return [];
-    if (activeTab === 'daily' && daily) return daily.backup.servers || [];
-    if (activeTab === 'weekly' && weekly) return [{ period: `${weekly.period.from} - ${weekly.period.to}` }];
-    if (activeTab === 'monthly' && monthly) return [{ period: `${monthly.period.from} - ${monthly.period.to}` }];
-    return [];
+  const currentReport = activeTab === 'daily' ? daily : activeTab === 'weekly' ? weekly
+    : activeTab === 'monthly' ? monthly : hostrisk;
+  const periodLabel = activeTab === 'daily' ? dailyDate : `${rangeFrom} — ${rangeTo}`;
+
+  const handleExportPDF = async () => {
+    if (!currentReport) { toast.error('No data to export'); return; }
+    await exportComplianceReportPDF(currentReport, activeTab, periodLabel);
   };
 
-  const getExportColumns = () => {
-    if (activeTab === 'daily') return [
-      { key: 'server_name', label: 'Server' },
-      { key: 'status', label: 'Status' },
-      { key: 'files', label: 'Files' },
-      { key: 'size_gb', label: 'Size (GB)' },
-    ];
-    return [];
+  // CSV hanya untuk tab yang punya tabel datar alami.
+  const handleExportCSV = () => {
+    if (activeTab === 'daily' && daily) {
+      exportToCSV(daily.backup.servers, `report-daily-backup-${dailyDate}`,
+        [{ key: 'server_name', label: 'Server' }, { key: 'status', label: 'Status' },
+         { key: 'files', label: 'Files' }, { key: 'size_gb', label: 'Size (GB)' }]);
+    } else if (activeTab === 'hostrisk' && hostrisk) {
+      exportToCSV(hostrisk.hosts, `report-host-risk-${rangeFrom}_${rangeTo}`,
+        [{ key: 'host', label: 'Host' }, { key: 'score', label: 'Score' }, { key: 'signal_count', label: 'Signals' },
+         { key: 'ssh_failed', label: 'SSH Failed' }, { key: 'capacity_alert', label: 'Capacity' },
+         { key: 'vuln_high', label: 'Vuln High' }, { key: 'backup_critical', label: 'Backup Critical' },
+         { key: 'irmc_fail', label: 'IRMC Fail' }, { key: 'incident_open', label: 'Incident Open' }]);
+    } else {
+      toast.info('CSV tersedia untuk tab Daily & Host Risk; gunakan PDF untuk ringkasan periode');
+    }
   };
+
+  // Drill-down berfilter ke modul sumber (param diabaikan modul yang belum membacanya).
+  const goTo = (path: string, params?: Record<string, string>) => {
+    const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+    router.push(path + qs);
+  };
+  const rangeParams = () => ({ from: rangeFrom, to: rangeTo });
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">ISO 27001 Reports</h1>
-        <ExportButton
-          data={getExportData()}
-          filename={`report-${activeTab}-${today}`}
-          title={`${tabLabels[activeTab]} Report`}
-          columns={getExportColumns()}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          {activeTab === 'daily' ? (
+            <input type="date" value={dailyDate} max={todayStr} onChange={(e) => setDailyDate(e.target.value)}
+              className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300" />
+          ) : (
+            <>
+              <input type="date" value={rangeFrom} max={rangeTo} onChange={(e) => setRangeFrom(e.target.value)}
+                className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300" />
+              <span className="text-gray-400 text-sm">—</span>
+              <input type="date" value={rangeTo} min={rangeFrom} max={todayStr} onChange={(e) => setRangeTo(e.target.value)}
+                className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300" />
+            </>
+          )}
+          <button onClick={handleExportCSV}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+            📊 CSV
+          </button>
+          <button onClick={handleExportPDF}
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+            📄 PDF Ringkasan
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg w-fit">
@@ -305,11 +368,11 @@ export default function ReportsModule() {
       {!loading && activeTab === 'weekly' && weekly && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <SummaryCard title="Incidents" value={weekly.incidents.total} color={weekly.incidents.total === 0 ? 'green' : 'orange'} icon="🚨" subtitle={`${weekly.incidents.by_status['Open'] || 0} open`} />
-            <SummaryCard title="Vulnerability" value={weekly.vulnerabilities.high_count} color={weekly.vulnerabilities.high_count === 0 ? 'green' : 'red'} icon="⚠️" subtitle={`${weekly.vulnerabilities.total_reports} reports`} />
+            <SummaryCard title="Incidents" value={weekly.incidents.total} color={weekly.incidents.total === 0 ? 'green' : 'orange'} icon="🚨" subtitle={`${weekly.incidents.by_status['Open'] || 0} open`} delta={weekly.trend?.incidents.delta} deltaGood="down" />
+            <SummaryCard title="Vulnerability" value={weekly.vulnerabilities.high_count} color={weekly.vulnerabilities.high_count === 0 ? 'green' : 'red'} icon="⚠️" subtitle={`${weekly.vulnerabilities.total_reports} reports`} delta={weekly.trend?.vuln_high.delta} deltaGood="down" />
             <SummaryCard title="Overdue Risks" value={weekly.risk.overdue} color={weekly.risk.overdue === 0 ? 'green' : 'red'} icon="🎯" subtitle={`${weekly.risk.total} total risks`} />
             <SummaryCard title="User Activity" value={weekly.activity.total} color="blue" icon="📜" subtitle={`${Object.keys(weekly.activity.by_module).length} modules`} />
-            <SummaryCard title="Backup Rate" value={`${weekly.backup.success_rate}%`} color={weekly.backup.success_rate >= 90 ? 'green' : weekly.backup.success_rate >= 70 ? 'yellow' : 'red'} icon="💾" subtitle={`${weekly.backup.active_servers} servers`} />
+            <SummaryCard title="Backup Rate" value={`${weekly.backup.success_rate}%`} color={weekly.backup.success_rate >= 90 ? 'green' : weekly.backup.success_rate >= 70 ? 'yellow' : 'red'} icon="💾" subtitle={`${weekly.backup.active_servers} servers`} delta={weekly.trend?.backup_rate.delta} deltaGood="up" />
           </div>
 
           {weekly.incidents.total === 0 ? (
@@ -363,11 +426,11 @@ export default function ReportsModule() {
         <div className="space-y-6">
           <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
             <SummaryCard title="Total Assets" value={monthly.executive.total_assets} color="purple" icon="📦" subtitle={`${monthly.assets.new_count} new`} />
-            <SummaryCard title="Incidents" value={monthly.executive.total_incidents} color="orange" icon="🚨" subtitle={`${monthly.incidents.ongoing} ongoing`} />
+            <SummaryCard title="Incidents" value={monthly.executive.total_incidents} color="orange" icon="🚨" subtitle={`${monthly.incidents.ongoing} ongoing`} delta={monthly.trend?.incidents.delta} deltaGood="down" />
             <SummaryCard title="Risks" value={monthly.executive.total_risks} color="amber" icon="🎯" />
-            <SummaryCard title="Backup Rate" value={`${monthly.executive.backup_rate}%`} color={monthly.executive.backup_rate >= 90 ? 'green' : monthly.executive.backup_rate >= 70 ? 'yellow' : 'red'} icon="💾" />
+            <SummaryCard title="Backup Rate" value={`${monthly.executive.backup_rate}%`} color={monthly.executive.backup_rate >= 90 ? 'green' : monthly.executive.backup_rate >= 70 ? 'yellow' : 'red'} icon="💾" delta={monthly.trend?.backup_rate.delta} deltaGood="up" />
             <SummaryCard title="IRMC Pass Rate" value={`${monthly.executive.irmc_pass_rate}%`} color={monthly.executive.irmc_pass_rate >= 90 ? 'green' : monthly.executive.irmc_pass_rate >= 70 ? 'yellow' : 'red'} icon="🖥️" />
-            <SummaryCard title="Capacity Alerts" value={monthly.executive.capacity_alerts} color={monthly.executive.capacity_alerts === 0 ? 'green' : 'yellow'} icon="📈" />
+            <SummaryCard title="Capacity Alerts" value={monthly.executive.capacity_alerts} color={monthly.executive.capacity_alerts === 0 ? 'green' : 'yellow'} icon="📈" delta={monthly.trend?.capacity_alerts.delta} deltaGood="down" />
           </div>
 
           {monthly.assets.new_count === 0 && monthly.assets.total === 0 ? (
@@ -458,6 +521,70 @@ export default function ReportsModule() {
             </div>
           ) : (
             <ReportTable title="Quality Objectives by Work Unit" columns={[{ key: 'unit', label: 'Work Unit' }, { key: 'count', label: 'Objectives' }]} data={Object.entries(monthly.quality.by_work_unit).map(([unit, count]) => ({ unit, count })) as unknown as Record<string, unknown>[]} />
+          )}
+        </div>
+      )}
+
+      {!loading && activeTab === 'hostrisk' && hostrisk && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            <SummaryCard title="Hosts Flagged" value={hostrisk.total_hosts_flagged} color={hostrisk.total_hosts_flagged === 0 ? 'green' : 'orange'} icon="🖧" subtitle="Punya ≥1 sinyal" />
+            <SummaryCard title="Multi-Signal Hosts" value={hostrisk.multi_signal_hosts} color={hostrisk.multi_signal_hosts === 0 ? 'green' : 'red'} icon="🔥" subtitle="≥3 sinyal berbeda" />
+            <SummaryCard title="Periode" value={`${hostrisk.hosts.length}`} color="blue" icon="📅" subtitle={`${hostrisk.period.from} → ${hostrisk.period.to}`} />
+          </div>
+
+          {hostrisk.hosts.length === 0 ? (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-8 text-center">
+              <p className="text-gray-500 dark:text-gray-400">Tidak ada host berisiko pada periode ini</p>
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-x-auto">
+              <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
+                <h3 className="font-semibold text-gray-900 dark:text-white">Host Risk Ranking</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Korelasi sinyal lintas-modul per host — klik angka untuk buka modul sumbernya (terfilter host).</p>
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 dark:bg-gray-900/40 text-gray-600 dark:text-gray-400">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium">Host</th>
+                    <th className="text-center px-2 py-2 font-medium">Score</th>
+                    <th className="text-center px-2 py-2 font-medium">Sinyal</th>
+                    <th className="text-center px-2 py-2 font-medium">SSH Gagal</th>
+                    <th className="text-center px-2 py-2 font-medium">Capacity</th>
+                    <th className="text-center px-2 py-2 font-medium">Vuln High</th>
+                    <th className="text-center px-2 py-2 font-medium">Backup Crit</th>
+                    <th className="text-center px-2 py-2 font-medium">IRMC Fail</th>
+                    <th className="text-center px-2 py-2 font-medium">Incident</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hostrisk.hosts.map((h) => {
+                    const signal = (val: number, path: string) =>
+                      val > 0 ? (
+                        <button onClick={() => goTo(path, { host: h.host, ...rangeParams() })}
+                          className="px-2 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 font-medium hover:underline">
+                          {val}
+                        </button>
+                      ) : <span className="text-gray-300 dark:text-gray-600">·</span>;
+                    return (
+                      <tr key={h.host} className="border-t border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                        <td className="px-4 py-2 font-mono text-gray-900 dark:text-white">{h.host}</td>
+                        <td className="text-center px-2 py-2 font-bold text-gray-900 dark:text-white">{h.score}</td>
+                        <td className="text-center px-2 py-2">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${h.signal_count >= 3 ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300' : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300'}`}>{h.signal_count}</span>
+                        </td>
+                        <td className="text-center px-2 py-2">{signal(h.ssh_failed, '/modules/ssh-report')}</td>
+                        <td className="text-center px-2 py-2">{signal(h.capacity_alert, '/modules/monthly-server-check')}</td>
+                        <td className="text-center px-2 py-2">{signal(h.vuln_high, '/modules/vulnerability')}</td>
+                        <td className="text-center px-2 py-2">{signal(h.backup_critical, '/modules/backup-check')}</td>
+                        <td className="text-center px-2 py-2">{signal(h.irmc_fail, '/modules/irmc')}</td>
+                        <td className="text-center px-2 py-2">{signal(h.incident_open, '/modules/incident')}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}

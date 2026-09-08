@@ -1872,3 +1872,142 @@ export function printTable(data: any[], title: string, columns?: { key: string; 
     printWindow.close();
   }, 250);
 }
+
+/**
+ * Export an ISO 27001 compliance report (Daily/Weekly/Monthly/Host-Risk) to a
+ * stacked executive PDF. Fixes the old export path that shipped only the backup
+ * table (daily) or a bare period string (weekly/monthly) — here every section
+ * that has data becomes its own table under one titled page.
+ */
+export async function exportComplianceReportPDF(
+  report: any,
+  tab: 'daily' | 'weekly' | 'monthly' | 'hostrisk',
+  periodLabel: string,
+) {
+  if (!report) {
+    console.warn('No data to export');
+    return;
+  }
+  const { default: jsPDF } = await import('jspdf');
+  const autoTable = (await import('jspdf-autotable')).default;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  const titleMap: Record<string, string> = {
+    daily: 'Daily Operational Report',
+    weekly: 'Weekly Management Report',
+    monthly: 'Monthly Compliance Report',
+    hostrisk: 'Host Risk Rollup',
+  };
+
+  doc.setFontSize(15);
+  doc.setTextColor(0);
+  doc.text(`ISO 27001 - ${titleMap[tab] || 'Report'}`, 14, 16);
+  doc.setFontSize(9);
+  doc.setTextColor(100);
+  doc.text(`Period: ${periodLabel}`, 14, 22);
+  doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 27);
+  doc.setTextColor(0);
+
+  let y = 33;
+  const section = (heading: string, head: string[], body: (string | number)[][]) => {
+    if (!body.length) return;
+    autoTable(doc, {
+      head: [
+        [{ content: heading, colSpan: head.length, styles: { halign: 'left', fillColor: [30, 41, 59], textColor: 255, fontStyle: 'bold' } }],
+        head,
+      ],
+      body: body.map(r => r.map(c => (c === null || c === undefined ? '' : String(c)))),
+      startY: y,
+      styles: { fontSize: 8, cellPadding: 1.5 },
+      headStyles: { fillColor: [59, 130, 246], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [245, 247, 250] },
+      margin: { left: 10, right: 10 },
+    });
+    y = (doc as any).lastAutoTable.finalY + 6;
+  };
+  const dict = (obj: Record<string, unknown> | undefined) =>
+    obj ? Object.entries(obj).map(([k, v]) => [k, v as string | number]) : [];
+
+  if (tab === 'daily') {
+    const d = report;
+    section('Executive Summary', ['Metric', 'Value'], [
+      ['Backup success rate', `${d.backup?.success_rate ?? 0}%`],
+      ['Servers OK', `${d.backup?.ok_count ?? 0}/${d.backup?.total_servers ?? 0}`],
+      ['SSH failed logins', d.ssh_failed?.total ?? 0],
+      ['SSH unique source IPs', d.ssh_failed?.unique_ips ?? 0],
+      ['Capacity alerts', d.capacity_alerts?.total ?? 0],
+      ['Open incidents', d.open_incidents?.total ?? 0],
+      ['IRMC failures', d.irmc_failures?.total ?? 0],
+    ]);
+    section('Backup Status', ['Server', 'Status', 'Files', 'Size (GB)'],
+      (d.backup?.servers || []).map((s: any) => [s.server_name, s.status, s.files, s.size_gb]));
+    section('SSH Failed Logins (Top 10)', ['Source IP', 'Username', 'Time', 'Server'],
+      (d.ssh_failed?.top_logins || []).map((s: any) => [s.source_ip, s.username, s.login_timestamp, s.hostname]));
+    section('Capacity Alerts', ['Server', 'CPU %', 'RAM %', 'Disk Root %', 'Status'],
+      (d.capacity_alerts?.servers || []).map((s: any) => [s.hostname, s.cpu, s.ram, s.disk_root, s.status]));
+    section('Open Incidents', ['Server', 'Type', 'Status', 'Description'],
+      (d.open_incidents?.incidents || []).map((i: any) => [i.server_name, i.incident_type, i.status, i.description]));
+    section('IRMC Failures', ['Server', 'Date', 'Status'],
+      (d.irmc_failures?.checks || []).map((c: any) => [c.server_name, c.check_date, c.status]));
+  } else if (tab === 'weekly') {
+    const w = report;
+    section('Executive Summary', ['Metric', 'Value'], [
+      ['Incidents', w.incidents?.total ?? 0],
+      ['Vulnerabilities (high)', w.vulnerabilities?.high_count ?? 0],
+      ['Overdue risks', w.risk?.overdue ?? 0],
+      ['User activity', w.activity?.total ?? 0],
+      ['Backup success rate', `${w.backup?.success_rate ?? 0}%`],
+    ]);
+    if (w.trend) {
+      section('Trend vs Previous Period', ['Metric', 'Now', 'Prev', 'Delta'],
+        Object.entries(w.trend).map(([k, v]: [string, any]) => [k, v.now, v.prev, (v.delta > 0 ? '+' : '') + v.delta]));
+    }
+    section('Incidents by Status', ['Status', 'Count'], dict(w.incidents?.by_status));
+    section('Risk by Status', ['Status', 'Count'], dict(w.risk?.by_status));
+    section('Top Activity Modules', ['Module', 'Actions'], dict(w.activity?.by_module));
+  } else if (tab === 'monthly') {
+    const m = report;
+    section('Executive Summary', ['Metric', 'Value'], [
+      ['Total assets', m.executive?.total_assets ?? 0],
+      ['Total incidents', m.executive?.total_incidents ?? 0],
+      ['Total risks', m.executive?.total_risks ?? 0],
+      ['Backup rate', `${m.executive?.backup_rate ?? 0}%`],
+      ['IRMC pass rate', `${m.executive?.irmc_pass_rate ?? 0}%`],
+      ['Capacity alerts', m.executive?.capacity_alerts ?? 0],
+    ]);
+    if (m.trend) {
+      section('Trend vs Previous Period', ['Metric', 'Now', 'Prev', 'Delta'],
+        Object.entries(m.trend).map(([k, v]: [string, any]) => [k, v.now, v.prev, (v.delta > 0 ? '+' : '') + v.delta]));
+    }
+    section('Assets by Category', ['Category', 'Count'], dict(m.assets?.by_category));
+    section('Risk by Level', ['Risk Level', 'Count'], dict(m.risk?.by_level));
+    section('Risk by Status', ['Status', 'Count'], dict(m.risk?.by_status));
+    section('Incidents by Type', ['Type', 'Count'], dict(m.incidents?.by_type));
+    section('Backup Summary', ['Metric', 'Value'], [
+      ['Success rate', `${m.backup?.success_rate ?? 0}%`],
+      ['Total records', m.backup?.total_records ?? 0],
+      ['Total volume', `${m.backup?.total_volume_gb ?? 0} GB`],
+      ['Active servers', m.backup?.active_servers ?? 0],
+    ]);
+    section('Capacity Status', ['Metric', 'Count'], [
+      ['Total servers', m.capacity?.total ?? 0],
+      ['OK', m.capacity?.ok ?? 0],
+      ['Warning', m.capacity?.warning ?? 0],
+      ['Critical', m.capacity?.critical ?? 0],
+    ]);
+    section('Quality Objectives by Work Unit', ['Work Unit', 'Objectives'], dict(m.quality?.by_work_unit));
+  } else if (tab === 'hostrisk') {
+    const h = report;
+    section('Executive Summary', ['Metric', 'Value'], [
+      ['Hosts flagged', h.total_hosts_flagged ?? 0],
+      ['Multi-signal hosts (>=3)', h.multi_signal_hosts ?? 0],
+    ]);
+    section('Host Risk Ranking', ['Host', 'Score', 'Signals', 'SSH', 'Cap', 'Vuln', 'Bkp', 'IRMC', 'Inc'],
+      (h.hosts || []).map((r: any) => [
+        r.host, r.score, r.signal_count, r.ssh_failed, r.capacity_alert,
+        r.vuln_high, r.backup_critical, r.irmc_fail, r.incident_open,
+      ]));
+  }
+
+  doc.save(`report_${tab}_${new Date().toISOString().split('T')[0]}.pdf`);
+}

@@ -57,6 +57,62 @@ def _get_date_range(from_date: str, to_date: str, default_days: int):
     return f, t
 
 
+def _period_metrics(db: Session, f: date, t: date):
+    """Metrik ringkas satu window, dipakai untuk membandingkan tren antar-periode.
+
+    Semua metrik di sini DIBATASI window (backup_date/scan_date/tanggal/created_at
+    antara f..t) supaya perbandingan now-vs-prev jujur — risk overdue sengaja tidak
+    ikut karena itu snapshot titik-waktu (vs today), bukan besaran ber-window.
+    """
+    f_dt = datetime.combine(f, datetime.min.time())
+    t_dt = datetime.combine(t, datetime.max.time())
+
+    backup_records = db.query(BackupHistory).filter(
+        BackupHistory.backup_date.between(f, t)
+    ).all()
+    backup_total = len(backup_records)
+    backup_ok = sum(1 for b in backup_records if b.status == "OK")
+
+    incidents_total = db.query(IncidentReport).filter(
+        IncidentReport.created_at.between(f_dt, t_dt)
+    ).count()
+
+    vulns = db.query(VulnerabilityReport).filter(
+        VulnerabilityReport.scan_date.between(f, t)
+    ).all()
+    vuln_high = sum(v.high_count or 0 for v in vulns)
+
+    capacity_alerts = db.query(CapacityMetrics).filter(
+        CapacityMetrics.tanggal.between(f, t),
+        CapacityMetrics.status.in_(["warning", "critical"]),
+    ).count()
+
+    return {
+        "backup_rate": round(backup_ok / backup_total * 100, 1) if backup_total else 0,
+        "incidents": incidents_total,
+        "vuln_high": vuln_high,
+        "capacity_alerts": capacity_alerts,
+    }
+
+
+def _trend_block(db: Session, f: date, t: date):
+    """Delta window kini vs window sebelumnya berukuran sama (delta = now - prev).
+
+    Untuk backup_rate delta positif = membaik; untuk incidents/vuln_high/capacity_alerts
+    delta positif = memburuk. Arah interpretasi diserahkan ke frontend.
+    """
+    span = (t - f).days + 1
+    prev_t = f - timedelta(days=1)
+    prev_f = prev_t - timedelta(days=span - 1)
+    now = _period_metrics(db, f, t)
+    prev = _period_metrics(db, prev_f, prev_t)
+    keys = ["backup_rate", "incidents", "vuln_high", "capacity_alerts"]
+    return {
+        k: {"now": now[k], "prev": prev[k], "delta": round(now[k] - prev[k], 1)}
+        for k in keys
+    }
+
+
 @router.get("/reports/daily")
 def get_daily_report(
     date_str: str = Query(None, alias="date"),
@@ -229,6 +285,7 @@ def get_weekly_report(
             "active_servers": backup_servers,
             "alert_count": backup_total - backup_ok,
         },
+        "trend": _trend_block(db, f, t),
     }
 
 
@@ -362,4 +419,120 @@ def get_monthly_report(
             "total": len(quality),
             "by_work_unit": q_by_unit,
         },
+        "trend": _trend_block(db, f, t),
+    }
+
+
+@router.get("/reports/host-risk")
+def get_host_risk_report(
+    from_date: str = Query(None, alias="from"),
+    to_date: str = Query(None, alias="to"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Host Risk Rollup — korelasi sinyal lintas-modul per host, berbasis hostname/IP.
+
+    Menggabung enam sinyal yang selama ini terpisah per modul menjadi satu peringkat
+    host: SSH gagal, capacity alert, vuln high, backup critical, IRMC fail, incident open.
+    Kunci host DINORMALISASI (lower/strip) atas server_name/hostname/server_ip — TIDAK
+    memaksa resolusi IP<->nama, jadi 'srv-01' dan '10.0.0.1' tetap dua host berbeda bila
+    modul menuliskannya berbeda. PenilaianRisiko sengaja TIDAK ikut: kuncinya nama_asset,
+    bukan host, dan memaksanya join akan mengarang korelasi (lihat ringkasan risk di weekly).
+    """
+    f, t = _get_date_range(from_date, to_date, 7)
+    f_dt = datetime.combine(f, datetime.min.time())
+    t_dt = datetime.combine(t, datetime.max.time())
+
+    SIGNAL_KEYS = [
+        "ssh_failed", "capacity_alert", "vuln_high",
+        "backup_critical", "irmc_fail", "incident_open",
+    ]
+    # vuln high & incident open dibobot lebih berat: keduanya sinyal paparan/insiden
+    # nyata, bukan sekadar ambang operasional.
+    WEIGHTS = {"vuln_high": 2, "incident_open": 2}
+
+    hosts: dict[str, dict] = {}
+
+    def bucket(raw):
+        if not raw:
+            return None
+        key = str(raw).strip()
+        norm = key.lower()
+        if not norm:
+            return None
+        if norm not in hosts:
+            hosts[norm] = {"host": key, **{k: 0 for k in SIGNAL_KEYS}}
+        return hosts[norm]
+
+    for hostname, cnt in db.query(
+        SSHLoginLog.hostname, func.count(SSHLoginLog.id)
+    ).filter(
+        SSHLoginLog.scan_date.between(f, t),
+        SSHLoginLog.status == "failed",
+    ).group_by(SSHLoginLog.hostname).all():
+        b = bucket(hostname)
+        if b:
+            b["ssh_failed"] += cnt
+
+    for hostname, cnt in db.query(
+        CapacityMetrics.hostname, func.count(CapacityMetrics.id)
+    ).filter(
+        CapacityMetrics.tanggal.between(f, t),
+        CapacityMetrics.status.in_(["warning", "critical"]),
+    ).group_by(CapacityMetrics.hostname).all():
+        b = bucket(hostname)
+        if b:
+            b["capacity_alert"] += cnt
+
+    for server_ip, high in db.query(
+        VulnerabilityReport.server_ip, func.sum(VulnerabilityReport.high_count)
+    ).filter(
+        VulnerabilityReport.scan_date.between(f, t),
+    ).group_by(VulnerabilityReport.server_ip).all():
+        b = bucket(server_ip)
+        if b:
+            b["vuln_high"] += int(high or 0)
+
+    for server_name, cnt in db.query(
+        BackupHistory.server_name, func.count(BackupHistory.id)
+    ).filter(
+        BackupHistory.backup_date.between(f, t),
+        BackupHistory.status == "Critical",
+    ).group_by(BackupHistory.server_name).all():
+        b = bucket(server_name)
+        if b:
+            b["backup_critical"] += cnt
+
+    for server_name, cnt in db.query(
+        IRMCCheck.server_name, func.count(IRMCCheck.id)
+    ).filter(
+        IRMCCheck.check_date.between(f, t),
+        IRMCCheck.status.in_(["fail", "warning"]),
+    ).group_by(IRMCCheck.server_name).all():
+        b = bucket(server_name)
+        if b:
+            b["irmc_fail"] += cnt
+
+    for server_name, cnt in db.query(
+        IncidentReport.server_name, func.count(IncidentReport.id)
+    ).filter(
+        IncidentReport.created_at.between(f_dt, t_dt),
+        IncidentReport.status.in_(["Open", "In Progress"]),
+    ).group_by(IncidentReport.server_name).all():
+        b = bucket(server_name)
+        if b:
+            b["incident_open"] += cnt
+
+    result = []
+    for h in hosts.values():
+        h["signal_count"] = sum(1 for k in SIGNAL_KEYS if h[k] > 0)
+        h["score"] = sum(WEIGHTS.get(k, 1) for k in SIGNAL_KEYS if h[k] > 0)
+        result.append(h)
+    result.sort(key=lambda x: (x["score"], x["signal_count"]), reverse=True)
+
+    return {
+        "period": {"from": f.isoformat(), "to": t.isoformat()},
+        "total_hosts_flagged": len(result),
+        "multi_signal_hosts": sum(1 for h in result if h["signal_count"] >= 3),
+        "hosts": result,
     }
