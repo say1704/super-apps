@@ -81,6 +81,7 @@ from api.log_compression import router as log_compression_router
 from api.irmc import router as irmc_router
 from api.irmc_folders import router as irmc_folders_router
 from api.irmc_reports import router as irmc_reports_router
+from api.reports import router as reports_router
 from api.monthly_server import router as monthly_server_router
 from api.vulnerability import router as vulnerability_router
 from api.incident import router as incident_router
@@ -137,6 +138,7 @@ app.include_router(backup_analytics_ml_router, prefix=API_V1_PREFIX)
 app.include_router(capacity_planning_router, prefix=API_V1_PREFIX)
 app.include_router(capacity_daily_report_router, prefix=API_V1_PREFIX)
 app.include_router(irmc_reports_router, prefix=API_V1_PREFIX)
+app.include_router(reports_router, prefix=API_V1_PREFIX)  # ISO 27001 compliance reports (daily/weekly/monthly/host-risk)
 app.include_router(ssh_report_router, prefix=API_V1_PREFIX)
 app.include_router(audit_router, prefix=API_V1_PREFIX)
 app.include_router(audit_trail_router, prefix=API_V1_PREFIX)
