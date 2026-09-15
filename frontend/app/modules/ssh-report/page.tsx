@@ -6,6 +6,7 @@ import { groupServersBySubnet } from '@/lib/subnet';
 import ExportButton from '@/components/ExportButton';
 import ServerDetailModal from './components/server-detail-modal';
 import { exportSSHReportPDF } from '@/lib/export';
+import AnomalyPanel from '@/components/AnomalyPanel';
 
 interface ServerData {
   hostname: string;
@@ -465,6 +466,9 @@ let alertMsg = `✅ Scan Complete!\n\n`;
           </button>
         </div>
       </div>
+
+      {/* AI anomaly panel (brute-force spikes, source IP baru) */}
+      <AnomalyPanel module="ssh-report" title="Deteksi Anomali SSH (AI)" />
 
       {/* Bulk Import Form */}
       {showBulkImport && (

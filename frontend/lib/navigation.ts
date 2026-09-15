@@ -70,6 +70,7 @@ export const navigation: NavItem[] = [
       { name: "Backup Analytics", href: "/modules/backup-analytics", keywords: ["analytics", "charts", "graphs", "ml"] },
     ],
   },
+  { name: "AI Insights", href: "/modules/anomaly-insights", icon: "🤖", key: "anomaly-insights", keywords: ["anomaly", "insight", "ai", "ml", "alert", "detection", "brute force", "outlier"] },
   { name: "Activity Logs", href: "/modules/activity", icon: "📜", key: "activity", keywords: ["audit", "log", "history", "tracker"] },
   { name: "Notifications", href: "/modules/notifications", icon: "🔔", key: "notifications", keywords: ["notification", "alert", "message"] },
   { name: "Settings", href: "/modules/settings", icon: "⚙️", key: "settings", keywords: ["config", "user", "role", "preference"] },

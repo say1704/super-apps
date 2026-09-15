@@ -64,6 +64,7 @@ export const ALL_MODULES: ModuleDef[] = [
   },
 
   { key: "reports", label: "Reports", icon: "📊", href: "/modules/reports" },
+  { key: "anomaly-insights", label: "AI Insights", icon: "🤖", href: "/modules/anomaly-insights" },
   { key: "activity", label: "Activity Logs", icon: "📜", href: "/modules/activity" },
   { key: "notifications", label: "Notifications", icon: "🔔", href: "/modules/notifications" },
   { key: "settings", label: "Settings", icon: "⚙️", href: "/modules/settings" },

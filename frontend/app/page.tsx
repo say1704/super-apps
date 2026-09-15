@@ -93,6 +93,7 @@ export default function Dashboard() {
   const [todayFocus, setTodayFocus] = useState<TodayFocus | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityItem[]>([]);
   const [infraStatus, setInfraStatus] = useState<InfrastructureStatus | null>(null);
+  const [anomalySummary, setAnomalySummary] = useState<{ open_total: number; by_severity: Record<string, number> } | null>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const statsRef = useRef<Stats | null>(null);
   const enhancedRef = useRef<EnhancedDashboard | null>(null);
@@ -161,14 +162,16 @@ export default function Dashboard() {
 
   const fetchEnhancements = useCallback(async () => {
     try {
-      const [focus, activity, infra] = await Promise.all([
+      const [focus, activity, infra, anomaly] = await Promise.all([
         apiRequest('/tasks/today-focus'),
         apiRequest('/api/dashboard/recent-activity'),
         apiRequest('/api/dashboard/infrastructure-status'),
+        apiRequest('/api/anomaly/summary').catch(() => null),
       ]);
       if (focus) setTodayFocus(focus);
       if (activity) setActivityFeed(activity);
       if (infra) setInfraStatus(infra);
+      if (anomaly) setAnomalySummary(anomaly);
     } catch {
       // Ignore
     }
@@ -542,6 +545,28 @@ export default function Dashboard() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* AI Insights — anomaly summary */}
+      {anomalySummary && anomalySummary.open_total > 0 && hasModuleAccess(user, 'anomaly-insights') && (
+        <div className="mb-8 p-4 rounded-lg shadow bg-white dark:bg-gray-800">
+          <div className="flex justify-between items-center mb-3">
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white">🤖 AI Insights — Anomali Terbuka ({anomalySummary.open_total})</h2>
+            <Link href="/modules/anomaly-insights" className="text-sm text-blue-600 dark:text-blue-400 hover:underline">Lihat Semua →</Link>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {(['critical', 'high', 'medium', 'low'] as const).map((s) => (
+              <Link key={s} href="/modules/anomaly-insights" className={`p-3 rounded-lg text-center transition-colors ${
+                s === 'critical' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300' :
+                s === 'high' ? 'bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300' :
+                s === 'medium' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' :
+                'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'}`}>
+                <div className="text-2xl font-bold">{anomalySummary.by_severity[s] || 0}</div>
+                <div className="text-xs capitalize">{s}</div>
+              </Link>
+            ))}
+          </div>
         </div>
       )}
 
