@@ -9,6 +9,7 @@ from .capacity import *
 from .config import *
 from .backup import *
 from .inventory import *
+from .anomaly import *
 from .activity import *
 from .tasks import *
 from .settings_models import *

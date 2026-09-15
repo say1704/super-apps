@@ -161,6 +161,24 @@ def register_lifecycle_handlers(app):
         except Exception as e:
             logger.warning("[RETENTION] Scheduler setup skipped: %s", e)
 
+        # Schedule daily cross-module anomaly scan (AI Insights)
+        try:
+            from utils.backup_scheduler import scheduler
+            from apscheduler.triggers.cron import CronTrigger
+            from utils.anomaly_engine import run_daily_anomaly_scan
+
+            scheduler.add_job(
+                run_daily_anomaly_scan,
+                CronTrigger(hour=6, minute=0),
+                args=[SessionLocal],
+                id="anomaly_scan_daily",
+                replace_existing=True,
+                name="Daily cross-module anomaly scan",
+            )
+            logger.info("[ANOMALY] Daily anomaly scan scheduled at 06:00")
+        except Exception as e:
+            logger.warning("[ANOMALY] Scheduler setup skipped: %s", e)
+
         # Pre-load AI models in background thread (non-blocking)
         threading.Thread(target=_preload_ai_models, daemon=True).start()
 

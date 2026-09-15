@@ -1,0 +1,116 @@
+"""AI Insights — cross-module anomaly findings API."""
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import User, AnomalyFinding
+from api.dependencies import get_current_user
+from utils import anomaly_engine
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/anomaly", tags=["AI Insights"])
+
+
+def _apply_rbac(query, user: User):
+    """Superadmin lihat semua; selain itu hanya finding dengan owner_role == role user."""
+    if getattr(user, "role", None) == "superadmin":
+        return query
+    return query.filter(AnomalyFinding.owner_role == user.role)
+
+
+@router.get("/findings")
+async def list_findings(
+    module: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = "open",
+    limit: int = Query(200, le=1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    q = _apply_rbac(db.query(AnomalyFinding), current_user)
+    if module:
+        q = q.filter(AnomalyFinding.module == module)
+    if severity:
+        q = q.filter(AnomalyFinding.severity == severity)
+    if status and status != "all":
+        q = q.filter(AnomalyFinding.status == status)
+    rows = q.order_by(AnomalyFinding.detected_at.desc()).limit(limit).all()
+    return {"findings": [r.to_dict() for r in rows], "total": len(rows)}
+
+
+@router.get("/summary")
+async def summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    q = _apply_rbac(db.query(AnomalyFinding), current_user).filter(AnomalyFinding.status == "open")
+    by_sev = dict(
+        _apply_rbac(db.query(AnomalyFinding.severity, func.count(AnomalyFinding.id)), current_user)
+        .filter(AnomalyFinding.status == "open")
+        .group_by(AnomalyFinding.severity).all()
+    )
+    by_mod = dict(
+        _apply_rbac(db.query(AnomalyFinding.module, func.count(AnomalyFinding.id)), current_user)
+        .filter(AnomalyFinding.status == "open")
+        .group_by(AnomalyFinding.module).all()
+    )
+    return {
+        "open_total": q.count(),
+        "by_severity": {k: int(v) for k, v in by_sev.items()},
+        "by_module": {k: int(v) for k, v in by_mod.items()},
+    }
+
+
+@router.post("/scan")
+async def scan(
+    module: str = Query("all"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Jalankan deteksi on-demand (semua modul atau satu), simpan, narasikan yang penting."""
+    if module and module != "all" and module not in anomaly_engine.DETECTORS:
+        raise HTTPException(status_code=400, detail=f"Modul tidak dikenal: {module}")
+    records = anomaly_engine.run_all(db) if module == "all" else anomaly_engine.run_module(db, module)
+    new_findings = anomaly_engine.persist(db, records)
+    try:
+        await anomaly_engine.narrate(db, new_findings)
+    except Exception as e:
+        logger.debug("narrate on scan fail: %s", e)
+    # Beri tahu sesi lain agar tabel AI Insights auto-refresh
+    try:
+        from api.dependencies import broadcast_event
+        await broadcast_event("anomaly_detected", {"module": module, "new_findings": len(new_findings)})
+    except Exception as e:
+        logger.debug("broadcast anomaly_detected fail: %s", e)
+    return {
+        "scanned_module": module,
+        "records": len(records),
+        "new_findings": len(new_findings),
+    }
+
+
+@router.post("/{finding_id}/ack")
+async def ack(finding_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_status(db, current_user, finding_id, "ack")
+
+
+@router.post("/{finding_id}/resolve")
+async def resolve(finding_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return _set_status(db, current_user, finding_id, "resolved")
+
+
+def _set_status(db: Session, user: User, finding_id: int, status: str):
+    f = _apply_rbac(db.query(AnomalyFinding), user).filter(AnomalyFinding.id == finding_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="Finding tidak ditemukan")
+    f.status = status
+    f.acked_by = user.id
+    f.acked_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": f.id, "status": f.status}

@@ -53,7 +53,7 @@ ALL_MODULES = [
     "monthly-server-check", "irmc", "vulnerability", "incident",
     "documentation", "assets", "risk", "quality", "forms", "worklog",
     "tasks", "backup-analytics", "backup-check", "activity",
-    "notifications", "settings", "ai", "audit-trail",
+    "notifications", "settings", "ai", "audit-trail", "anomaly-insights",
 ]
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)

@@ -70,6 +70,7 @@ from api.asset_metadata import router as asset_metadata_router
 from api.capacity_planning import router as capacity_planning_router
 from api.capacity_daily_report import router as capacity_daily_report_router
 from api.application_inventory import router as application_inventory_router
+from api.anomaly import router as anomaly_router
 from api.configurations import router as configurations_router
 
 # New modular routers
@@ -139,6 +140,7 @@ app.include_router(backup_analytics_ml_router, prefix=API_V1_PREFIX)
 app.include_router(capacity_planning_router, prefix=API_V1_PREFIX)
 app.include_router(capacity_daily_report_router, prefix=API_V1_PREFIX)
 app.include_router(application_inventory_router, prefix=API_V1_PREFIX)  # Application & Software Inventory (read; diisi via proses SAR)
+app.include_router(anomaly_router, prefix=API_V1_PREFIX)  # AI Insights — cross-module anomaly detection
 app.include_router(irmc_reports_router, prefix=API_V1_PREFIX)
 app.include_router(reports_router, prefix=API_V1_PREFIX)  # ISO 27001 compliance reports (daily/weekly/monthly/host-risk)
 app.include_router(ssh_report_router, prefix=API_V1_PREFIX)
