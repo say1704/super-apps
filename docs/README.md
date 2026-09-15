@@ -133,4 +133,5 @@ pm2 save
 - [Backend](./09-backend.md)
 - [Troubleshooting](./10-troubleshooting.md)
 - [PM2 Management](./11-pm2-management.md)
+- [AI Insights (Deteksi Anomali)](./12-ai-insights.md)
 - [Migration Guide](./migration-guide.md)
