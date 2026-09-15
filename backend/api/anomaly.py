@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -18,10 +18,11 @@ router = APIRouter(prefix="/anomaly", tags=["AI Insights"])
 
 
 def _apply_rbac(query, user: User):
-    """Superadmin lihat semua; selain itu hanya finding dengan owner_role == role user."""
+    """Superadmin lihat semua; selain itu finding dengan owner_role == role user
+    ATAU finding umum (owner_role NULL, mis. capacity/incident yang sumbernya tak ber-owner)."""
     if getattr(user, "role", None) == "superadmin":
         return query
-    return query.filter(AnomalyFinding.owner_role == user.role)
+    return query.filter(or_(AnomalyFinding.owner_role == user.role, AnomalyFinding.owner_role.is_(None)))
 
 
 @router.get("/findings")
