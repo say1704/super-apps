@@ -134,4 +134,5 @@ pm2 save
 - [Troubleshooting](./10-troubleshooting.md)
 - [PM2 Management](./11-pm2-management.md)
 - [AI Insights (Deteksi Anomali)](./12-ai-insights.md)
+- [Lessons Learned](./13-lessons-learned.md)
 - [Migration Guide](./migration-guide.md)
