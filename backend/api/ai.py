@@ -326,6 +326,30 @@ async def ai_status(
     }
 
 
+@router.get("/ai/rag/status")
+async def ai_rag_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Status indeks RAG (jumlah chunk per sumber)."""
+    from utils.rag_retrieve import rag_status
+    return rag_status(db)
+
+
+@router.post("/ai/reindex")
+async def ai_reindex(
+    full: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Bangun ulang indeks RAG dari semua sumber (superadmin). full=true paksa embed ulang."""
+    if getattr(current_user, "role", None) != "superadmin":
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail="Hanya superadmin")
+    from utils.rag_index import reindex
+    return reindex(db, full=full)
+
+
 @router.post("/ai/chat")
 async def ai_chat(
     request: Request,

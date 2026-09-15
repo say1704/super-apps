@@ -179,6 +179,37 @@ def register_lifecycle_handlers(app):
         except Exception as e:
             logger.warning("[ANOMALY] Scheduler setup skipped: %s", e)
 
+        # RAG: index awal (background, tunggu model-server) + reindex harian
+        try:
+            from utils.backup_scheduler import scheduler
+            from apscheduler.triggers.cron import CronTrigger
+
+            def _rag_reindex_job(session_factory):
+                from utils.rag_index import reindex
+                _db = session_factory()
+                try:
+                    reindex(_db)
+                finally:
+                    _db.close()
+
+            scheduler.add_job(
+                _rag_reindex_job, CronTrigger(hour=5, minute=30), args=[SessionLocal],
+                id="rag_reindex_daily", replace_existing=True, name="Daily RAG reindex",
+            )
+
+            def _rag_initial():
+                import time as _t
+                _t.sleep(25)  # beri waktu model-server siap (embeddings)
+                try:
+                    _rag_reindex_job(SessionLocal)
+                except Exception as e:
+                    logger.warning("[RAG] initial index skipped: %s", e)
+
+            threading.Thread(target=_rag_initial, daemon=True).start()
+            logger.info("[RAG] daily reindex scheduled (05:30) + initial index started")
+        except Exception as e:
+            logger.warning("[RAG] setup skipped: %s", e)
+
         # Pre-load AI models in background thread (non-blocking)
         threading.Thread(target=_preload_ai_models, daemon=True).start()
 
