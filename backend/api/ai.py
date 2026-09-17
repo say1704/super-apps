@@ -350,6 +350,33 @@ async def ai_reindex(
     return reindex(db, full=full)
 
 
+@router.post("/ai/agent")
+async def ai_agent(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mode Agent (LangGraph autonomous tool-calling). Untuk pertanyaan kompleks/multi-data.
+    Selalu aman: fallback ke jawaban RAG bila agent gagal/timeout."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    user_message = (body.get("message") or "").strip()
+    history = body.get("history", [])
+    conversation_id = body.get("conversation_id")
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    accessible_modules = resolve_user_modules(current_user, db)
+    user_ctx = {"user_id": current_user.id, "role": current_user.role,
+                "accessible_modules": accessible_modules}
+    from utils.agent_graph import run_agent
+    result = await run_agent(user_message, user_ctx, history,
+                             thread_id=str(conversation_id or current_user.id))
+    return result
+
+
 @router.post("/ai/chat")
 async def ai_chat(
     request: Request,

@@ -11,3 +11,10 @@ rag_top_k: 5            # jumlah potongan teratas yang disuntik ke prompt
 rag_min_score: 0.30    # ambang cosine minimum agar potongan dipakai
 rag_chunk_tokens: 600  # ukuran chunk saat indexing (kata)
 rag_overlap: 80        # tumpang-tindih antar chunk
+
+# Agent Fase 2 (LangGraph autonomous tool-calling)
+agent_enabled: true
+agent_mode: bounded    # bounded (andal, ~1 panggilan LLM) | deep (autonomous tool-calling, lambat di CPU)
+agent_max_steps: 3     # (mode deep) batas langkah/tool-call
+agent_timeout_s: 150   # timeout per permintaan → fallback ke RAG
+agent_model: light     # sintesis bounded: light=1.5B cepat & selalu termuat; grounding (RAG+data) yang jaga akurasi. (heavy 7B terlalu lambat di CPU → timeout)

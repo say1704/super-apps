@@ -179,16 +179,19 @@ async def _heavy_idle_watchdog():
 
 # ── Inference ─────────────────────────────────────────────────────────
 
-def _do_inference(model, messages, max_tokens, temperature):
+def _do_inference(model, messages, max_tokens, temperature, stop=None):
     global _last_inference_time
     _last_inference_time = time.monotonic()
     start = _last_inference_time
+    stops = ["<|im_end|>", "<|end|>"]
+    if stop:
+        stops = stops + [s for s in stop if s]
     try:
         result = model.create_chat_completion(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
-            stop=["<|im_end|>", "<|end|>"],
+            stop=stops,
         )
         elapsed = time.monotonic() - start
         usage = result.get("usage", {})
@@ -212,6 +215,7 @@ async def _infer(
     messages: List[dict],
     max_tokens: int,
     temperature: float,
+    stop=None,
 ) -> tuple[str, dict]:
     info = LABELS.get(label)
     if info is None:
@@ -232,7 +236,7 @@ async def _infer(
 
     async with sem:
         content, meta = await asyncio.get_event_loop().run_in_executor(
-            _executor, _do_inference, instance, messages, max_tokens, temperature,
+            _executor, _do_inference, instance, messages, max_tokens, temperature, stop,
         )
     return content, meta
 
@@ -341,6 +345,7 @@ async def chat_completions(request: Request):
     max_tokens = body.get("max_tokens", MAX_OUTPUT_TOKENS)
     temperature = body.get("temperature", 0.1)
     stream = body.get("stream", False)
+    stop = body.get("stop")
 
     if not messages:
         raise HTTPException(status_code=400, detail="messages is required")
@@ -375,7 +380,7 @@ async def chat_completions(request: Request):
         )
 
     try:
-        content, meta = await _infer(model, messages, max_tokens, temperature)
+        content, meta = await _infer(model, messages, max_tokens, temperature, stop)
     except HTTPException:
         raise
     except Exception as e:

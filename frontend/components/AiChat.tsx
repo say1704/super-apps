@@ -65,6 +65,7 @@ export default function AiChat() {
   const [undoCountdown, setUndoCountdown] = useState(30);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
+  const [agentMode, setAgentMode] = useState(false);
   const undoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -179,6 +180,24 @@ export default function AiChat() {
       }
       setPendingAction(null);
       setLoading(false);
+      return;
+    }
+
+    // Mode Agent (LangGraph bounded) → endpoint non-stream /ai/agent
+    if (agentMode) {
+      try {
+        const res: any = await apiRequest('/ai/agent', {
+          method: 'POST',
+          body: JSON.stringify({ message: trimmed, history: messages, conversation_id: conversationId }),
+        });
+        const src = Array.isArray(res.sources) && res.sources.length
+          ? `\n\n_sumber: ${res.sources.slice(0, 6).join(', ')}_` : '';
+        addMessage({ role: 'assistant', content: (res.answer || 'Maaf, tidak ada jawaban.') + src });
+      } catch (err: any) {
+        addMessage({ role: 'assistant', content: err.message || 'Gagal menjalankan agent.' });
+      } finally {
+        setLoading(false);
+      }
       return;
     }
 
@@ -507,6 +526,18 @@ export default function AiChat() {
 
           {/* Input */}
           <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
+            <div className="px-3 pt-2">
+              <button
+                onClick={() => setAgentMode(v => !v)}
+                title="Mode Agent: menalar multi-sumber (RAG + data + anomali). Lebih dalam, sedikit lebih lambat."
+                className={`text-xs font-medium px-2.5 py-1 rounded-full border transition-colors ${
+                  agentMode
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-gray-50 dark:bg-gray-700/50 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-gray-600'}`}
+              >
+                🤖 Mode Agent {agentMode ? 'ON' : 'OFF'}
+              </button>
+            </div>
             <div className="flex gap-2 p-3">
               <textarea
                 ref={inputRef}

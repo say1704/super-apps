@@ -112,6 +112,7 @@ async def _chat_completion(
     max_tokens: int,
     temperature: float,
     stream: bool = False,
+    stop=None,
 ) -> str:
     url = f"{MODEL_SERVER_URL}/v1/chat/completions"
     payload = {
@@ -121,6 +122,8 @@ async def _chat_completion(
         "temperature": temperature,
         "stream": False,
     }
+    if stop:
+        payload["stop"] = stop
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, verify=False) as client:
