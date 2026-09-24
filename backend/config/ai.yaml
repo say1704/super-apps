@@ -18,3 +18,8 @@ agent_mode: bounded    # bounded (andal, ~1 panggilan LLM) | deep (autonomous to
 agent_max_steps: 3     # (mode deep) batas langkah/tool-call
 agent_timeout_s: 150   # timeout per permintaan → fallback ke RAG
 agent_model: light     # sintesis bounded: light=1.5B cepat & selalu termuat; grounding (RAG+data) yang jaga akurasi. (heavy 7B terlalu lambat di CPU → timeout)
+
+# Anomali — knob pengembangan
+backup_expected_hour: 21   # jam jadwal backup harian (untuk sinyal backup_missing & suppression jadwal)
+backup_grace_hours: 2      # toleransi setelah jadwal sebelum dianggap tidak jalan
+forecast_horizon_days: 30  # early-warning kapasitas: flag bila proyeksi capai threshold ≤ N hari

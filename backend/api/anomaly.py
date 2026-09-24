@@ -115,3 +115,53 @@ def _set_status(db: Session, user: User, finding_id: int, status: str):
     f.acked_at = datetime.now(timezone.utc)
     db.commit()
     return {"id": f.id, "status": f.status}
+
+
+def _suppress_from_finding(db, user, finding_id, until, reason):
+    from datetime import timedelta  # noqa
+    from models import AnomalySuppression
+    f = _apply_rbac(db.query(AnomalyFinding), user).filter(AnomalyFinding.id == finding_id).first()
+    if not f:
+        raise HTTPException(status_code=404, detail="Finding tidak ditemukan")
+    db.add(AnomalySuppression(module=f.module, entity=f.entity, signal_type=f.signal_type,
+                              until=until, reason=reason, created_by=user.id))
+    f.status = "resolved"
+    f.acked_by = user.id
+    f.acked_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": f.id, "suppressed": True, "until": until.isoformat() if until else None}
+
+
+@router.post("/{finding_id}/snooze")
+async def snooze(finding_id: int, days: int = Query(7, ge=1, le=365),
+                 db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Diamkan sementara temuan serupa (module+entity+signal) selama N hari."""
+    from datetime import timedelta
+    until = datetime.now(timezone.utc) + timedelta(days=days)
+    return _suppress_from_finding(db, current_user, finding_id, until, f"snooze {days}h")
+
+
+@router.post("/{finding_id}/false_positive")
+async def false_positive(finding_id: int, db: Session = Depends(get_db),
+                         current_user: User = Depends(get_current_user)):
+    """Tandai false positive → suppression permanen untuk module+entity+signal ini."""
+    return _suppress_from_finding(db, current_user, finding_id, None, "false positive")
+
+
+@router.get("/suppressions")
+async def list_suppressions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from models import AnomalySuppression
+    rows = db.query(AnomalySuppression).order_by(AnomalySuppression.created_at.desc()).limit(200).all()
+    return {"suppressions": [s.to_dict() for s in rows]}
+
+
+@router.delete("/suppressions/{supp_id}")
+async def delete_suppression(supp_id: int, db: Session = Depends(get_db),
+                             current_user: User = Depends(get_current_user)):
+    from models import AnomalySuppression
+    s = db.query(AnomalySuppression).filter(AnomalySuppression.id == supp_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Suppression tidak ditemukan")
+    db.delete(s)
+    db.commit()
+    return {"deleted": supp_id}

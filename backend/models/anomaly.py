@@ -60,3 +60,28 @@ class AnomalyFinding(Base):
             "acked_by": self.acked_by,
             "acked_at": to_iso(self.acked_at) if self.acked_at else None,
         }
+
+
+class AnomalySuppression(Base):
+    """Aturan snooze / false-positive: sembunyikan finding yang cocok saat scan berikutnya."""
+    __tablename__ = "anomaly_suppression"
+    __table_args__ = (
+        Index("ix_anomaly_supp_match", "module", "entity"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    module = Column(String, nullable=False, index=True)
+    entity = Column(String, nullable=True, index=True)
+    signal_type = Column(String, nullable=True)     # NULL = semua sinyal pada module+entity
+    until = Column(DateTime, nullable=True)         # NULL = permanen (false positive)
+    reason = Column(String, nullable=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id, "module": self.module, "entity": self.entity,
+            "signal_type": self.signal_type,
+            "until": to_iso(self.until) if self.until else None,
+            "reason": self.reason, "created_at": to_iso(self.created_at),
+        }

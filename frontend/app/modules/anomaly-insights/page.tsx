@@ -47,7 +47,11 @@ const MODULE_HREF: Record<string, string> = {
   vulnerability: "/modules/vulnerability",
   "backup-analytics": "/modules/backup-analytics",
   incident: "/modules/incident",
+  correlation: "/modules/reports",
 };
+
+// modul agent/korelasi tambahan yang mungkin muncul di filter
+
 
 // Satuan metrik per jenis sinyal → untuk memformat angka agar manusiawi.
 const UNIT_BY_SIGNAL: Record<string, string> = {
@@ -149,6 +153,17 @@ export default function AnomalyInsightsPage() {
   const setStatus = async (id: number, action: "ack" | "resolve") => {
     try {
       await apiRequest(`/api/anomaly/${id}/${action}`, { method: "POST" });
+      setSelected(null);
+      await load();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const suppress = async (id: number, kind: "snooze" | "false_positive") => {
+    const path = kind === "snooze" ? `/api/anomaly/${id}/snooze?days=7` : `/api/anomaly/${id}/false_positive`;
+    try {
+      await apiRequest(path, { method: "POST" });
       setSelected(null);
       await load();
     } catch {
@@ -260,6 +275,8 @@ export default function AnomalyInsightsPage() {
                       <div className="flex gap-1">
                         <button onClick={() => setStatus(f.id, "ack")} className="px-2.5 py-1 rounded bg-amber-500 text-white text-xs font-medium hover:bg-amber-600">Ack</button>
                         <button onClick={() => setStatus(f.id, "resolve")} className="px-2.5 py-1 rounded bg-green-600 text-white text-xs font-medium hover:bg-green-700">Resolve</button>
+                        <button onClick={() => suppress(f.id, "snooze")} title="Diamkan 7 hari" className="px-2 py-1 rounded bg-gray-200 dark:bg-slate-600 text-gray-700 dark:text-gray-200 text-xs hover:bg-gray-300">😴</button>
+                        <button onClick={() => suppress(f.id, "false_positive")} title="Tandai false positive (abaikan permanen)" className="px-2 py-1 rounded bg-gray-200 dark:bg-slate-600 text-gray-700 dark:text-gray-200 text-xs hover:bg-gray-300">🚫</button>
                       </div>
                     )}
                     {f.status !== "open" && <span className="text-xs font-medium text-gray-400 capitalize">{f.status}</span>}
@@ -368,6 +385,8 @@ export default function AnomalyInsightsPage() {
               <div className="ml-auto flex gap-2">
                 {selected.status === "open" && (
                   <>
+                    <button onClick={() => suppress(selected.id, "snooze")} title="Diamkan 7 hari" className="px-3 py-2 rounded bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-200 text-sm font-medium hover:bg-gray-200 dark:hover:bg-slate-600">😴 Snooze</button>
+                    <button onClick={() => suppress(selected.id, "false_positive")} title="Abaikan permanen untuk host+sinyal ini" className="px-3 py-2 rounded bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-200 text-sm font-medium hover:bg-gray-200 dark:hover:bg-slate-600">🚫 False positive</button>
                     <button onClick={() => setStatus(selected.id, "ack")} className="px-4 py-2 rounded bg-amber-500 text-white text-sm font-medium hover:bg-amber-600">Ack</button>
                     <button onClick={() => setStatus(selected.id, "resolve")} className="px-4 py-2 rounded bg-green-600 text-white text-sm font-medium hover:bg-green-700">Resolve</button>
                   </>

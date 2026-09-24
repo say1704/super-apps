@@ -26,6 +26,21 @@ BASELINE_DAYS = 30      # jendela membangun deret harian
 RECENT_DAYS = 3         # hanya munculkan anomali yang tanggalnya dalam N hari terakhir
 MIN_POINTS = 5          # minimal titik data untuk deteksi statistik
 
+# Knob pengembangan (override via config/ai.yaml)
+BACKUP_EXPECTED_HOUR = 21    # jam jadwal backup harian (0-23, waktu server/UTC lokal proses)
+BACKUP_GRACE_HOURS = 2       # toleransi setelah jadwal sebelum dianggap "tidak jalan"
+FORECAST_HORIZON_DAYS = 30   # ambang early-warning kapasitas (hari menuju threshold)
+
+try:
+    import yaml as _yaml
+    from pathlib import Path as _Path
+    _agi_cfg = _yaml.safe_load((_Path(__file__).resolve().parents[1] / "config" / "ai.yaml").read_text()) or {}
+    BACKUP_EXPECTED_HOUR = int(_agi_cfg.get("backup_expected_hour", BACKUP_EXPECTED_HOUR))
+    BACKUP_GRACE_HOURS = int(_agi_cfg.get("backup_grace_hours", BACKUP_GRACE_HOURS))
+    FORECAST_HORIZON_DAYS = int(_agi_cfg.get("forecast_horizon_days", FORECAST_HORIZON_DAYS))
+except Exception:
+    pass
+
 # module key (untuk finding + panel/registry)
 MODULES = ["ssh-report", "capacity", "vulnerability", "backup-analytics", "incident", "inventory"]
 
@@ -52,19 +67,24 @@ def _rec(module, entity, signal_type, severity, score, title, message,
     }
 
 
-def _series_map(rows: List[tuple], start: date, end: date) -> Dict[str, Dict[date, float]]:
-    """rows = list of (entity, day:date, value). Kembalikan {entity: {day: value}} gap-filled 0."""
+def _series_map(rows: List[tuple], start: date, end: date, gap_fill: bool = False) -> Dict[str, Dict[date, float]]:
+    """rows = list of (entity, day:date, value) -> {entity: {day: value}}.
+
+    gap_fill=False (default): hanya hari yang punya baris nyata. Untuk deret PENGUKURAN
+    (ukuran backup, %CPU/RAM/disk, jumlah vuln) hari tanpa baris = BELUM diukur, bukan 0 —
+    mengisi 0 mencemari baseline & memicu false-positive (mis. backup belum jalan hari ini).
+    """
     by_entity: Dict[str, Dict[date, float]] = defaultdict(dict)
     for entity, day, value in rows:
         if entity is None or day is None:
             continue
         by_entity[entity][day] = float(value or 0)
-    # gap-fill
-    ndays = (end - start).days
-    all_days = [start + timedelta(days=i) for i in range(ndays + 1)]
-    for entity, m in by_entity.items():
-        for d in all_days:
-            m.setdefault(d, 0.0)
+    if gap_fill:
+        ndays = (end - start).days
+        all_days = [start + timedelta(days=i) for i in range(ndays + 1)]
+        for entity, m in by_entity.items():
+            for d in all_days:
+                m.setdefault(d, 0.0)
     return by_entity
 
 
@@ -251,6 +271,43 @@ def detect_capacity(db: Session) -> List[dict]:
                             ("Pemakaian disk /", 4, "capacity_disk_outlier")]:
         by_host = _series_map([(r[0], r[1], r[idx]) for r in rows], start, end)
         out += _detect_series("capacity", label, sig, by_host, start, end, only_high=True, unit="percent")
+    out += detect_capacity_forecast(rows)
+    return out
+
+
+def detect_capacity_forecast(rows) -> List[dict]:
+    """Early-warning: proyeksi disk / menuju 90% via regresi (reuse capacity_projection)."""
+    try:
+        from utils.capacity_projection import calculate_projection
+    except Exception:
+        return []
+    disk_by_host: Dict[str, List[tuple]] = defaultdict(list)
+    for host, tgl, _cpu, _ram, disk in rows:
+        if host and tgl and disk is not None:
+            disk_by_host[host].append((tgl, float(disk)))
+    out: List[dict] = []
+    for host, series in disk_by_host.items():
+        series.sort(key=lambda x: x[0])
+        if len(series) < MIN_POINTS:
+            continue
+        hist = [{"date": d.isoformat(), "use_pct": v} for d, v in series]
+        cur = series[-1][1]
+        try:
+            proj = calculate_projection(hist, cur, "/", threshold=90.0, metric_type="disk")
+        except Exception:
+            continue
+        days = proj.get("days_to_threshold")
+        if days is None or days > FORECAST_HORIZON_DAYS:
+            continue
+        sev = "critical" if days <= 7 else "high"
+        rec = proj.get("recommendation") or ""
+        out.append(_rec(
+            "capacity", host, "capacity_disk_forecast", sev, 0.7,
+            f"Disk / diproyeksikan penuh pada {host}",
+            f"Disk / kini {cur:.0f}%, diproyeksikan capai 90% dalam ~{days} hari "
+            f"(≈ {proj.get('threshold_date') or '-'}). {rec}".strip(),
+            series[0][0], _today(), metric_current=cur, metric_baseline=90.0,
+        ))
     return out
 
 
@@ -280,8 +337,36 @@ def detect_backup(db: Session) -> List[dict]:
     owner = {r[0]: r[3] for r in rows}
     by_srv = _series_map([(r[0], r[1], r[2]) for r in rows], start, end)
     # backup: anomali ukuran naik ATAU turun (turun = mungkin backup gagal/parsial)
-    return _detect_series("backup-analytics", "Ukuran backup", "backup_size_anomaly",
-                          by_srv, start, end, owner, only_high=False, unit="bytes")
+    findings = _detect_series("backup-analytics", "Ukuran backup", "backup_size_anomaly",
+                              by_srv, start, end, owner, only_high=False, unit="bytes")
+    findings += detect_backup_missing(rows, owner, start, end)
+    return findings
+
+
+def detect_backup_missing(rows, owner, start: date, end: date) -> List[dict]:
+    """Flag server yang RUTIN backup harian tapi tak ada baris hari ini SETELAH jam jadwal.
+    Sadar-jadwal: sebelum BACKUP_EXPECTED_HOUR+grace → diam (job memang belum jalan)."""
+    now = datetime.now(timezone.utc)
+    if now.hour < (BACKUP_EXPECTED_HOUR + BACKUP_GRACE_HOURS):
+        return []  # belum lewat jadwal → jangan menuduh
+    days_by_srv: Dict[str, set] = defaultdict(set)
+    for srv, day, *_ in rows:
+        if srv and day:
+            days_by_srv[srv].add(day)
+    window = max((end - start).days, 1)
+    out: List[dict] = []
+    for srv, days in days_by_srv.items():
+        # hanya server yang biasanya backup harian (≥60% hari punya baris) & tak ada baris hari ini
+        if len(days) >= window * 0.6 and end not in days:
+            last = max(days)
+            out.append(_rec(
+                "backup-analytics", srv, "backup_missing", "high", 0.8,
+                f"Backup belum jalan hari ini pada {srv}",
+                f"Belum ada backup untuk {_fmt_date(end)} (jadwal ~{BACKUP_EXPECTED_HOUR:02d}:00). "
+                f"Backup terakhir: {_fmt_date(last)}.",
+                last, end, metric_current=0, metric_baseline=None, owner_role=owner.get(srv),
+            ))
+    return out
 
 
 def detect_incident(db: Session) -> List[dict]:
@@ -359,18 +444,81 @@ def run_module(db: Session, module: str) -> List[dict]:
         return []
 
 
+_SEV_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+_RANK_SEV = {v: k for k, v in _SEV_RANK.items()}
+
+
+def correlate(records: List[dict]) -> List[dict]:
+    """Gabungkan ≥2 sinyal pada host yang sama jadi satu finding berprioritas (host_correlated)."""
+    by_host: Dict[str, List[dict]] = defaultdict(list)
+    for r in records:
+        ent = (r.get("entity") or "").strip().lower()
+        if not ent or ent == "all":
+            continue
+        by_host[ent].append(r)
+    out: List[dict] = []
+    today = _today()
+    for ent, items in by_host.items():
+        sigs = {i["signal_type"] for i in items}
+        if len(sigs) < 2:
+            continue
+        max_rank = max(_SEV_RANK.get(i["severity"], 1) for i in items)
+        if len(sigs) >= 3:
+            max_rank = min(4, max_rank + 1)  # naikkan bila banyak sinyal
+        entity_disp = items[0].get("entity")
+        owner = next((i.get("owner_role") for i in items if i.get("owner_role")), None)
+        modules = sorted({i["module"] for i in items})
+        summary = "; ".join(sorted(sigs))
+        out.append(_rec(
+            "correlation", entity_disp, "host_correlated", _RANK_SEV[max_rank], 0.9,
+            f"{len(sigs)} sinyal anomali pada {entity_disp}",
+            f"Host {entity_disp} menunjukkan {len(sigs)} jenis anomali ({summary}) "
+            f"lintas modul: {', '.join(modules)}. Perlu diperiksa sebagai prioritas.",
+            today, today, metric_current=len(sigs), metric_baseline=None, owner_role=owner,
+        ))
+    return out
+
+
 def run_all(db: Session) -> List[dict]:
     out: List[dict] = []
     for module in DETECTORS:
         out += run_module(db, module)
+    try:
+        out += correlate(out)
+    except Exception as e:
+        logger.warning("correlate failed: %s", e)
     return out
 
 
+def _is_suppressed(db: Session, r: dict) -> bool:
+    """True bila ada aturan suppression aktif (snooze/false-positive) yang cocok."""
+    from models import AnomalySuppression
+    now = datetime.now(timezone.utc)
+    q = db.query(AnomalySuppression).filter(AnomalySuppression.module == r["module"])
+    ent = r.get("entity")
+    for s in q.all():
+        if s.entity and s.entity != ent:
+            continue
+        if s.signal_type and s.signal_type != r["signal_type"]:
+            continue
+        if s.until is not None:
+            u = s.until
+            if u.tzinfo is None:
+                u = u.replace(tzinfo=timezone.utc)
+            if u < now:
+                continue  # kedaluwarsa
+        return True
+    return False
+
+
 def persist(db: Session, records: List[dict]) -> List[AnomalyFinding]:
-    """Upsert by fingerprint. Yang baru → status open. Return daftar finding yang BARU dibuat."""
+    """Upsert by fingerprint. Yang baru → status open. Return daftar finding yang BARU dibuat.
+    Finding yang cocok aturan suppression aktif dilewati (tidak dibuat)."""
     new_findings: List[AnomalyFinding] = []
     for r in records:
         existing = db.query(AnomalyFinding).filter(AnomalyFinding.fingerprint == r["fingerprint"]).first()
+        if not existing and _is_suppressed(db, r):
+            continue
         if existing:
             existing.severity = r["severity"]
             existing.score = r["score"]
