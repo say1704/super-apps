@@ -23,3 +23,4 @@ agent_model: light     # sintesis bounded: light=1.5B cepat & selalu termuat; gr
 backup_expected_hour: 21   # jam jadwal backup harian (untuk sinyal backup_missing & suppression jadwal)
 backup_grace_hours: 2      # toleransi setelah jadwal sebelum dianggap tidak jalan
 forecast_horizon_days: 30  # early-warning kapasitas: flag bila proyeksi capai threshold ≤ N hari
+capacity_min_alert_pct: 70 # capacity outlier hanya di-flag bila nilai ≥ ini (buang noise ~1%)

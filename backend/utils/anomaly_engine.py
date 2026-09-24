@@ -30,6 +30,7 @@ MIN_POINTS = 5          # minimal titik data untuk deteksi statistik
 BACKUP_EXPECTED_HOUR = 21    # jam jadwal backup harian (0-23, waktu server/UTC lokal proses)
 BACKUP_GRACE_HOURS = 2       # toleransi setelah jadwal sebelum dianggap "tidak jalan"
 FORECAST_HORIZON_DAYS = 30   # ambang early-warning kapasitas (hari menuju threshold)
+CAPACITY_MIN_ALERT_PCT = 70  # capacity outlier hanya bermakna bila nilai ≥ ini (hindari noise ~1%)
 
 try:
     import yaml as _yaml
@@ -38,6 +39,7 @@ try:
     BACKUP_EXPECTED_HOUR = int(_agi_cfg.get("backup_expected_hour", BACKUP_EXPECTED_HOUR))
     BACKUP_GRACE_HOURS = int(_agi_cfg.get("backup_grace_hours", BACKUP_GRACE_HOURS))
     FORECAST_HORIZON_DAYS = int(_agi_cfg.get("forecast_horizon_days", FORECAST_HORIZON_DAYS))
+    CAPACITY_MIN_ALERT_PCT = float(_agi_cfg.get("capacity_min_alert_pct", CAPACITY_MIN_ALERT_PCT))
 except Exception:
     pass
 
@@ -270,7 +272,9 @@ def detect_capacity(db: Session) -> List[dict]:
                             ("RAM peak", 3, "capacity_ram_outlier"),
                             ("Pemakaian disk /", 4, "capacity_disk_outlier")]:
         by_host = _series_map([(r[0], r[1], r[idx]) for r in rows], start, end)
-        out += _detect_series("capacity", label, sig, by_host, start, end, only_high=True, unit="percent")
+        found = _detect_series("capacity", label, sig, by_host, start, end, only_high=True, unit="percent")
+        # Ambang absolut: lonjakan kecil (mis. 1%) valid secara statistik tapi tak bermakna → buang.
+        out += [f for f in found if (f.get("metric_current") or 0) >= CAPACITY_MIN_ALERT_PCT]
     out += detect_capacity_forecast(rows)
     return out
 
