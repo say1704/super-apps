@@ -468,12 +468,21 @@ def correlate(records: List[dict]) -> List[dict]:
         entity_disp = items[0].get("entity")
         owner = next((i.get("owner_role") for i in items if i.get("owner_role")), None)
         modules = sorted({i["module"] for i in items})
-        summary = "; ".join(sorted(sigs))
+        # Rincian tiap anomali penyusun (pesan asli), urut severity tertinggi dulu, maks 6 butir
+        ordered = sorted(items, key=lambda x: -_SEV_RANK.get(x.get("severity", "low"), 1))
+        bullets = "\n".join(
+            f"• [{i.get('severity')} · {i.get('module')}] {i.get('message', '')}"
+            for i in ordered[:6]
+        )
+        more = f"\n• …dan {len(ordered) - 6} lagi" if len(ordered) > 6 else ""
+        message = (
+            f"Host {entity_disp} menunjukkan {len(sigs)} jenis anomali lintas modul "
+            f"({', '.join(modules)}). Prioritas untuk diperiksa.\n\n{bullets}{more}"
+        )
         out.append(_rec(
             "correlation", entity_disp, "host_correlated", _RANK_SEV[max_rank], 0.9,
-            f"{len(sigs)} sinyal anomali pada {entity_disp}",
-            f"Host {entity_disp} menunjukkan {len(sigs)} jenis anomali ({summary}) "
-            f"lintas modul: {', '.join(modules)}. Perlu diperiksa sebagai prioritas.",
+            f"{len(sigs)} anomali prioritas pada {entity_disp}",
+            message,
             today, today, metric_current=len(sigs), metric_baseline=None, owner_role=owner,
         ))
     return out

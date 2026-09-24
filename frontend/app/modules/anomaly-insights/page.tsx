@@ -343,7 +343,7 @@ export default function AnomalyInsightsPage() {
                 )}
 
                 {/* Pesan utama (manusiawi) */}
-                <p className="text-base leading-relaxed text-gray-800 dark:text-gray-200">{selected.message}</p>
+                <p className="text-base leading-relaxed text-gray-800 dark:text-gray-200 whitespace-pre-line">{selected.message}</p>
 
                 {/* Narasi AI */}
                 {selected.narrative && (
