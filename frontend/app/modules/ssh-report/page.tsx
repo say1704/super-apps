@@ -39,7 +39,7 @@ export default function SSHReportModule() {
   const [bulkShowPassword, setBulkShowPassword] = useState(false);
   const [bulkSelectFromList, setBulkSelectFromList] = useState(false);
   const [bulkSelectedServers, setBulkSelectedServers] = useState<string[]>([]);
-  const [bulkMaxWorkers, setBulkMaxWorkers] = useState(50);
+  const [bulkMaxWorkers, setBulkMaxWorkers] = useState(8);
   const [fetchData, setFetchData] = useState({
     hostname: '',
     username: '',
@@ -252,9 +252,11 @@ export default function SSHReportModule() {
 
       const operationId = startResult.operation_id;
 
+      let pollFails = 0;  // toleransi hiccup sesaat (mis. pool DB sibuk) sebelum menyerah
       const pollInterval = setInterval(async () => {
         try {
           const progress = await apiRequest(`/api/ssh-report/progress/${operationId}`);
+          pollFails = 0;
 
           setScanProgress({
             processed: progress.processed || 0,
@@ -297,10 +299,13 @@ let alertMsg = `✅ Scan Complete!\n\n`;
             setScanProgress(null);
           }
         } catch (err) {
-          clearInterval(pollInterval);
-          setScanning(false);
-          setScanProgress(null);
-          alert('Failed to poll progress');
+          pollFails += 1;
+          if (pollFails >= 5) {  // hanya menyerah setelah 5 gagal beruntun
+            clearInterval(pollInterval);
+            setScanning(false);
+            setScanProgress(null);
+            alert('Failed to poll progress');
+          }
         }
       }, 1000);
 
@@ -373,9 +378,11 @@ let alertMsg = `✅ Scan Complete!\n\n`;
 
       const operationId = result.operation_id;
 
+      let pollFails = 0;  // toleransi hiccup sesaat (mis. pool DB sibuk) sebelum menyerah
       const pollInterval = setInterval(async () => {
         try {
           const progress = await apiRequest(`/api/ssh-report/progress/${operationId}`);
+          pollFails = 0;
 
           setBatchProgress((prev) =>
             prev
@@ -421,9 +428,12 @@ let alertMsg = `✅ Scan Complete!\n\n`;
             setBatchProgress(null);
           }
         } catch (err) {
-          clearInterval(pollInterval);
-          setBatchProgress(null);
-          alert('Failed to poll progress');
+          pollFails += 1;
+          if (pollFails >= 5) {  // hanya menyerah setelah 5 gagal beruntun
+            clearInterval(pollInterval);
+            setBatchProgress(null);
+            alert('Failed to poll progress');
+          }
         }
       }, 1000);
     } catch (error: any) {
@@ -678,9 +688,9 @@ let alertMsg = `✅ Scan Complete!\n\n`;
                   <input
                     type="number"
                     min={1}
-                    max={200}
+                    max={16}
                     value={bulkMaxWorkers}
-                    onChange={(e) => setBulkMaxWorkers(parseInt(e.target.value) || 50)}
+                    onChange={(e) => setBulkMaxWorkers(parseInt(e.target.value) || 8)}
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
                   />
                 </div>
