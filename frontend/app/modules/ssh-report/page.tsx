@@ -53,6 +53,8 @@ export default function SSHReportModule() {
   const [authMode, setAuthMode] = useState<'root' | 'sudo'>('root');
   const [authMethod, setAuthMethod] = useState<'password' | 'key'>('password');
   const [showPassword, setShowPassword] = useState(false);
+  // One-time correction: re-parse & timpa data lama pada (host, scan_date) daripada melewatinya.
+  const [overwrite, setOverwrite] = useState(false);
   const [selectedServer, setSelectedServer] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{
@@ -230,7 +232,8 @@ export default function SSHReportModule() {
         port: fetchData.port,
         ssh_report_dir: fetchData.ssh_report_dir,
         auth_mode: authMode,
-        mode: fetchData.mode
+        mode: fetchData.mode,
+        overwrite: overwrite
       };
 
       if (authMethod === 'key' && fetchData.private_key) {
@@ -271,6 +274,7 @@ let alertMsg = `✅ Scan Complete!\n\n`;
              alertMsg += `📁 Total Files: ${s.total_files}\n`;
              alertMsg += `✅ Imported: ${s.imported}\n`;
              alertMsg += `⏭️ Skipped (Duplicate): ${s.skipped_existing}\n`;
+             if (s.overwritten) alertMsg += `🔁 Overwritten (re-parse): ${s.overwritten}\n`;
              if (s.mode) {
                alertMsg += `📊 Mode: ${s.mode}${s.days_checked ? ` (${s.days_checked} hari)` : ''}\n`;
              }
@@ -363,6 +367,7 @@ let alertMsg = `✅ Scan Complete!\n\n`;
           auth_mode: 'sudo',
           max_workers: bulkMaxWorkers,
           mode: fetchData.mode,
+          overwrite: overwrite,
         }),
       });
 
@@ -712,6 +717,25 @@ let alertMsg = `✅ Scan Complete!\n\n`;
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
           </div>
 
+          {/* Overwrite / re-parse toggle (koreksi sekali) */}
+          <div className="mb-4">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={overwrite}
+                onChange={(e) => setOverwrite(e.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="font-medium text-sm">🔁 Timpa data lama (re-parse)</span>
+                <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                  Hitung ulang & perbarui tanggal yang sudah ada dengan logika terbaru (baris lama pada
+                  host+tanggal itu diganti). Nyalakan hanya untuk koreksi sekali.
+                </p>
+              </span>
+            </label>
+          </div>
+
           <div className="mt-4 flex gap-2">
             <button
               onClick={handleBulkImport}
@@ -1018,6 +1042,24 @@ let alertMsg = `✅ Scan Complete!\n\n`;
                 <option value="monthly">🗓️ Monthly — 365 hari (backfill libur panjang)</option>
               </select>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">💡 Mode selain Auto membatasi scan ke rentang tanggal file.</p>
+            </div>
+            {/* Overwrite / re-parse toggle (koreksi sekali) */}
+            <div className="col-span-2">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={(e) => setOverwrite(e.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="font-medium text-sm">🔁 Timpa data lama (re-parse)</span>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                    Hitung ulang & perbarui tanggal yang sudah ada dengan logika terbaru (baris lama
+                    pada host+tanggal itu diganti). Nyalakan hanya untuk koreksi sekali.
+                  </p>
+                </span>
+              </label>
             </div>
           </div>
           <div className="mt-4 flex gap-2">

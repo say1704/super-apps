@@ -280,6 +280,7 @@ class FetchSSHReportRequest(BaseModel):
     ssh_report_dir: str = "/var/log/sa"
     auth_mode: Optional[str] = "root"
     mode: Optional[str] = "auto"
+    overwrite: bool = False  # True = re-parse & timpa data lama pada (host, scan_date)
 
     @field_validator("mode")
     @classmethod
@@ -301,6 +302,7 @@ class BatchScanRequest(BaseModel):
     auth_mode: Optional[str] = "sudo"
     max_workers: int = 50
     mode: Optional[str] = "auto"
+    overwrite: bool = False  # True = re-parse & timpa data lama pada (host, scan_date)
 
     @field_validator("mode")
     @classmethod
@@ -381,6 +383,9 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
         imported_count = 0
         skipped_count = 0
         errors = []
+        overwrite = bool(request_data.get('overwrite', False))
+        _purged_scope = set()   # (hostname, scan_date) yang sudah dibersihkan saat overwrite
+        overwritten_count = 0
 
         # Scan mode date-window filter (auto = no filter, preserves existing behavior)
         mode = request_data.get('mode', 'auto')
@@ -431,6 +436,10 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
         else:
             existing_set = set()
 
+        # Mode overwrite: jangan lewati sebagai duplikat — baris lama akan dihapus per (host, scan_date)
+        if overwrite:
+            existing_set = set()
+
         tracker.update(15, 100, f"Found {total_files} files to import ({len(existing_set)} duplicates in DB)")
 
         # Batch read all files via single SSH command (skip for sudo mode — batch uses ; which only elevates first command via sudo)
@@ -472,6 +481,16 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
                 date_prefix = parts[0]
                 server_hostname = parts[1].strip()
                 target_date = datetime.strptime(date_prefix, '%Y%m%d').date()
+
+                # Overwrite: hapus baris lama untuk (host, scan_date) ini sekali, lalu re-parse bersih
+                if overwrite and (server_hostname, target_date) not in _purged_scope:
+                    deleted = db.query(SSHLoginLog).filter(
+                        SSHLoginLog.hostname == server_hostname,
+                        SSHLoginLog.scan_date == target_date,
+                    ).delete(synchronize_session=False)
+                    _purged_scope.add((server_hostname, target_date))
+                    if deleted:
+                        overwritten_count += deleted
 
                 # Get content from batch result or fall back to individual read
                 content = file_contents.get(_sanitize_path(file_path), "")
@@ -588,6 +607,7 @@ def scan_and_import_ssh_logs(operation_id: str, request_data: dict, user_data: d
                     "imported": imported_count,
                     "skipped_existing": skipped_count,
                     "skipped_old": skipped_old,
+                    "overwritten": overwritten_count,
                     "errors": errors
                 }
             }
@@ -623,7 +643,8 @@ async def fetch_ssh_logs(
         'port': request.port,
         'ssh_report_dir': request.ssh_report_dir,
         'auth_mode': request.auth_mode,
-        'mode': request.mode
+        'mode': request.mode,
+        'overwrite': request.overwrite
     }
 
     user_data = {'username': current_user.username, 'role': current_user.role}
@@ -699,6 +720,7 @@ async def batch_scan_all_servers(
                 'ssh_report_dir': request.ssh_report_dir,
                 'auth_mode': request.auth_mode,
                 'mode': request.mode or 'auto',
+                'overwrite': request.overwrite,
                 'retry_delays': [2, 5, 10],
             }
             single_op_id = f"{operation_id}-{hostname}"
