@@ -8,6 +8,7 @@ import { PageContainer, DataTable } from '@/components/page-container';
 import { useToast } from '@/components/toast';
 import ExportButton from '@/components/ExportButton';
 import { LogForm } from './components/log-form';
+import { ImportXlsPanel } from './components/import-xls-modal';
 import { SearchFilterSection } from './components/search-filter-section';
 import { ReportSection } from './components/report-section';
 import { LogDetailModal } from './components/log-detail-modal';
@@ -78,6 +79,7 @@ export default function LogMaintenanceModule() {
 
   // Form states
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [formData, setFormData] = useState<LogFormData>({
     server: '',
@@ -358,6 +360,22 @@ export default function LogMaintenanceModule() {
         reportButtonText={showReport ? 'Close Report' : 'Report'}
         isReportOpen={showReport}
       />
+
+      {/* Import toolbar */}
+      {!showReport && !showForm && (
+        <div className="mb-4">
+          <button
+            type="button"
+            onClick={() => setShowImport(!showImport)}
+            className="px-4 py-2 rounded-lg border border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-sm"
+          >
+            {showImport ? 'Tutup Import' : '📥 Import XLS/CSV/ODS'}
+          </button>
+        </div>
+      )}
+      {showImport && !showReport && (
+        <ImportXlsPanel onImported={fetchData} onCancel={() => setShowImport(false)} />
+      )}
 
       {/* Report Section */}
       <ReportSection

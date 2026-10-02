@@ -1,10 +1,11 @@
 from utils.timezone import to_iso, utcnow
 """Log Maintenance CRUD + Reports"""
-from fastapi import APIRouter, Depends, Query, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Form, Request, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import extract, distinct
-from typing import Optional
+from typing import Optional, Any, List
 from datetime import datetime, date
+import io
 import logging
 
 from database import get_db
@@ -532,3 +533,186 @@ async def get_log_maintenance_advanced(
         },
         "filters": {"server": server, "year": year, "month": month},
     }
+
+
+# ==================== IMPORT SPREADSHEET (xlsx / csv / ods) ====================
+
+_HEADER_TOKENS = {
+    "server": "server", "path": "path", "script": "script",
+    "date": "tanggal", "size": "size", "notes": "keterangan",
+}
+
+
+def _load_spreadsheet_rows(ext: str, contents: bytes) -> List[List[Any]]:
+    """Normalisasi berbagai format spreadsheet → list-of-rows agar logika parse seragam."""
+    if ext in ("xlsx", "xlsm"):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True, read_only=True)
+        try:
+            ws = wb.active
+            return [list(r) for r in ws.iter_rows(values_only=True)]
+        finally:
+            wb.close()
+    if ext == "csv":
+        import csv as _csv
+        text = contents.decode("utf-8-sig", errors="replace")
+        sample = text[:4096]
+        try:
+            dialect = _csv.Sniffer().sniff(sample, delimiters=",;\t")
+            reader = _csv.reader(io.StringIO(text), dialect)
+        except _csv.Error:
+            delim = ";" if sample.count(";") > sample.count(",") else ","
+            reader = _csv.reader(io.StringIO(text), delimiter=delim)
+        return [list(r) for r in reader]
+    if ext == "ods":
+        import pandas as pd
+        df = pd.read_excel(io.BytesIO(contents), engine="odf", header=None, dtype=object)
+        df = df.where(pd.notna(df), None)
+        return df.values.tolist()
+    return []
+
+
+def _detect_header(rows: List[List[Any]]):
+    """Cari baris header (abaikan baris judul). Return (colmap, header_index) atau (None, -1)."""
+    for i, row in enumerate(rows[:10]):
+        if not row:
+            continue
+        norm = [str(c).strip().lower() if c is not None else "" for c in row]
+        colmap = {}
+        for key, token in _HEADER_TOKENS.items():
+            for j, cell in enumerate(norm):
+                if token in cell:
+                    colmap[key] = j
+                    break
+        if "server" in colmap and "path" in colmap:
+            return colmap, i
+    return None, -1
+
+
+def _parse_date_flexible(v):
+    """datetime/date → .date(); string DD-MM-YYYY / DD/MM/YYYY / YYYY-MM-DD → date; gagal → None."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    s = s.split(" ")[0]  # buang bagian jam bila ada (mis. Timestamp pandas)
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@router.post("/log-maintenance/import", response_model=dict)
+async def import_log_maintenance(
+    file: UploadFile = File(...),
+    overwrite: bool = Form(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Import data Log Deletion dari spreadsheet (.xlsx/.xlsm/.csv/.ods).
+
+    Idempotent: baris duplikat (server+path+tanggal+script, scope owner_role) dilewati;
+    overwrite=True meng-update size & notes baris yang cocok. Sel merged (Server/Tanggal)
+    di-forward-fill agar tiap baris Path jadi satu record.
+    """
+    filename = (file.filename or "").lower()
+    ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in ("xlsx", "xlsm", "csv", "ods"):
+        if ext == "xls":
+            raise HTTPException(status_code=400,
+                                detail="Format .xls lama tidak didukung. Simpan sebagai .xlsx / .csv / .ods.")
+        raise HTTPException(status_code=400, detail="Format tidak didukung. Gunakan .xlsx, .csv, atau .ods.")
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran file maksimal 5 MB.")
+
+    try:
+        rows = _load_spreadsheet_rows(ext, contents)
+    except Exception as e:
+        logger.warning("import parse fail: %s", e)
+        raise HTTPException(status_code=400, detail=f"Gagal membaca file: {e}")
+
+    colmap, header_idx = _detect_header(rows)
+    if colmap is None:
+        raise HTTPException(status_code=400,
+                            detail="Header kolom tidak ditemukan. Pastikan ada kolom Server & Path.")
+
+    def _cell(row, key):
+        idx = colmap.get(key)
+        if idx is None or idx >= len(row):
+            return None
+        return row[idx]
+
+    total_rows = imported = updated = skipped = 0
+    errors: List[str] = []
+    last_server = None
+    last_date_raw = None
+
+    for r in rows[header_idx + 1:]:
+        if not r or all(c is None or str(c).strip() == "" for c in r):
+            continue
+        srv_raw = _cell(r, "server")
+        if srv_raw is not None and str(srv_raw).strip():
+            last_server = str(srv_raw).strip()
+        date_raw = _cell(r, "date")
+        if date_raw is not None and str(date_raw).strip():
+            last_date_raw = date_raw
+
+        path_raw = _cell(r, "path")
+        path = str(path_raw).strip() if path_raw is not None and str(path_raw).strip() else None
+        if not path:
+            continue  # baris tanpa path bukan entri
+        if not last_server:
+            errors.append(f"Baris tanpa server (path={path[:40]}) dilewati")
+            continue
+
+        total_rows += 1
+        server = last_server[:MAX_SERVER_LEN]
+        path = path[:MAX_PATH_LEN]
+        exec_date = _parse_date_flexible(last_date_raw)
+        script_raw = _cell(r, "script")
+        script = str(script_raw).strip()[:MAX_SCRIPT_LEN] if script_raw is not None and str(script_raw).strip() else None
+        size_raw = _cell(r, "size")
+        size = str(size_raw).strip()[:MAX_SIZE_LEN] if size_raw is not None and str(size_raw).strip() else None
+        notes_raw = _cell(r, "notes")
+        notes = str(notes_raw).strip()[:MAX_NOTES_LEN] if notes_raw is not None and str(notes_raw).strip() else None
+
+        q = db.query(LogMaintenance).filter(
+            LogMaintenance.deleted_at.is_(None),
+            LogMaintenance.owner_role == current_user.role,
+            LogMaintenance.server == server,
+            LogMaintenance.path == path,
+            LogMaintenance.script_execution == script,
+        )
+        q = q.filter(LogMaintenance.execution_date.is_(None) if exec_date is None
+                     else LogMaintenance.execution_date == exec_date)
+        existing = q.first()
+        if existing:
+            if overwrite:
+                existing.size = size
+                existing.notes = notes
+                increment_version(existing)
+                updated += 1
+            else:
+                skipped += 1
+            continue
+
+        db.add(LogMaintenance(
+            server=server, path=path, script_execution=script,
+            execution_date=exec_date, size=size, notes=notes,
+            created_by=current_user.id, owner_role=current_user.role,
+        ))
+        imported += 1
+
+    db.commit()
+    log_activity(db, current_user.id, "IMPORT", "Log Maintenance",
+                 f"Import {file.filename}: +{imported} baru, {updated} update, {skipped} dilewati")
+    return {"total_rows": total_rows, "imported": imported, "updated": updated,
+            "skipped": skipped, "errors": errors[:50]}
