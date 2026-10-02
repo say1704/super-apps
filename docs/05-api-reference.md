@@ -132,6 +132,17 @@ Returns: `{"status": "ok", "timestamp": "..."}`
 
 ---
 
+## Backup Analytics (per-server)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/backup-analytics/analytics/server/{server_ip}/aggregation` | Yes | Agregasi total file & size per-server (7 hari–12 bulan) |
+| GET | `/api/v1/backup-analytics/analytics/server/{server_ip}/same-date-comparison` | Yes | Komparasi ukuran backup pada **tanggal yang sama** antar-bulan (per-server) |
+
+Query `same-date-comparison`: `date=YYYY-MM-DD` (default hari ini), `months` (2–24, default 6), `nearest` (toleransi ±hari 0–7, default 0=tepat). RBAC: superadmin lihat semua, selain itu `owner_role == role`. Response: `{ server_ip, base_date, nearest_days, points:[{target, actual, size_bytes, size_formatted, jumlah_files, status, found, delta_pct}] }`.
+
+---
+
 ## AI Assistant
 
 | Method | Path | Auth |

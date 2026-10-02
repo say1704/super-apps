@@ -3194,3 +3194,83 @@ async def get_server_aggregation(
         "latest_size_gb": latest.total_size_bytes / (1024**3) if latest else 0,
         "periods": results,
     }
+
+
+def _minus_months(d: date, m: int) -> date:
+    """Tanggal yang sama m bulan sebelumnya; hari di-clamp ke akhir bulan (mis. 31 Jan - 1 bln → 28/29 Feb)."""
+    import calendar
+    y = d.year
+    mo = d.month - m
+    while mo <= 0:
+        mo += 12
+        y -= 1
+    day = min(d.day, calendar.monthrange(y, mo)[1])
+    return date(y, mo, day)
+
+
+@router.get("/analytics/server/{server_ip}/same-date-comparison", response_model=dict)
+async def get_same_date_comparison(
+    server_ip: str,
+    date_str: Optional[str] = Query(None, alias="date"),
+    months: int = Query(6, ge=2, le=24),
+    nearest: int = Query(0, ge=0, le=7, description="Toleransi ±hari bila tak ada baris tepat (0=tepat)"),
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user),
+):
+    """Komparasi ukuran backup pada TANGGAL yang sama di beberapa bulan terakhir (per-server).
+
+    mis. base 2026-10-02, months=6 → bandingkan 2 Okt, 2 Sep, 2 Agu, 2 Jul, 2 Jun, 2 Mei.
+    """
+    try:
+        base = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else date.today()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD")
+
+    targets = [_minus_months(base, m) for m in range(months)]
+    oldest = min(targets) - timedelta(days=nearest)
+    newest = max(targets) + timedelta(days=nearest)
+
+    rows = _apply_backup_rbac(db.query(BackupHistory), current_user).filter(
+        BackupHistory.server_name == server_ip,
+        BackupHistory.backup_date >= oldest,
+        BackupHistory.backup_date <= newest,
+    ).order_by(BackupHistory.backup_date).all()
+    by_date = {r.backup_date: r for r in rows}
+
+    def _pick(t: date):
+        if t in by_date:
+            return by_date[t]
+        if nearest > 0:
+            for off in range(1, nearest + 1):
+                for cand in (t - timedelta(days=off), t + timedelta(days=off)):
+                    if cand in by_date:
+                        return by_date[cand]
+        return None
+
+    points = []
+    prev_size = None
+    for t in sorted(targets):  # terlama → terbaru, agar delta vs bulan sebelumnya
+        rec = _pick(t)
+        size = rec.total_size_bytes if rec else None
+        delta = None
+        if size is not None and prev_size not in (None, 0):
+            delta = round((size - prev_size) / prev_size * 100, 1)
+        if size is not None:
+            prev_size = size
+        points.append({
+            "target": t.isoformat(),
+            "actual": rec.backup_date.isoformat() if rec else None,
+            "size_bytes": size,
+            "size_formatted": BackupHistory.format_size(size) if size is not None else "—",
+            "jumlah_files": rec.jumlah_files if rec else None,
+            "status": rec.status if rec else None,
+            "found": rec is not None,
+            "delta_pct": delta,
+        })
+    points.sort(key=lambda p: p["target"], reverse=True)  # terbaru dulu utk tampilan
+
+    return {
+        "server_ip": server_ip,
+        "base_date": base.isoformat(),
+        "nearest_days": nearest,
+        "points": points,
+    }

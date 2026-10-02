@@ -11,9 +11,29 @@ function swrFetcher<T>(url: string): Promise<T> {
   return apiRequest(url);
 }
 
+interface SameDatePoint {
+  target: string;
+  actual: string | null;
+  size_bytes: number | null;
+  size_formatted: string;
+  jumlah_files: number | null;
+  status: string | null;
+  found: boolean;
+  delta_pct: number | null;
+}
+interface SameDateResponse {
+  server_ip: string;
+  base_date: string;
+  nearest_days: number;
+  points: SameDatePoint[];
+}
+
 export default function ServerAggregation() {
   const [serverIp, setServerIp] = useState("");
   const [submittedIp, setSubmittedIp] = useState("");
+  const [cmpDate, setCmpDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [cmpMonths, setCmpMonths] = useState(6);
+  const [cmpNearest, setCmpNearest] = useState(0);
 
   const { data: serverListData } = useSWR<UnifiedServerListData>(
     "/api/backup-analytics/analytics/unified-servers?days=30",
@@ -23,6 +43,14 @@ export default function ServerAggregation() {
 
   const { data, isLoading } = useSWR<ServerAggregationResponse>(
     submittedIp ? `/api/backup-analytics/analytics/server/${encodeURIComponent(submittedIp)}/aggregation` : null,
+    swrFetcher,
+    { revalidateOnFocus: false },
+  );
+
+  const { data: cmpData, isLoading: cmpLoading } = useSWR<SameDateResponse>(
+    submittedIp
+      ? `/api/backup-analytics/analytics/server/${encodeURIComponent(submittedIp)}/same-date-comparison?date=${cmpDate}&months=${cmpMonths}&nearest=${cmpNearest}`
+      : null,
     swrFetcher,
     { revalidateOnFocus: false },
   );
@@ -47,6 +75,7 @@ export default function ServerAggregation() {
   const servers = serverListData?.servers || [];
 
   return (
+    <>
     <div className="rounded-lg bg-slate-800 border border-slate-700 mb-4">
       <div className="p-4 border-b border-slate-700">
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -164,5 +193,125 @@ export default function ServerAggregation() {
         </>
       )}
     </div>
+
+    {/* Komparasi Tanggal Sama Antar-Bulan (per-server) */}
+    <div className="rounded-lg bg-slate-800 border border-slate-700 mb-4">
+      <div className="p-4 border-b border-slate-700">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-200">📅 Komparasi Tanggal Sama Antar-Bulan</h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Ukuran backup pada tanggal yang sama di beberapa bulan terakhir (mis. 2 Okt vs 2 Sep vs 2 Agu …)
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              value={cmpDate}
+              onChange={(e) => setCmpDate(e.target.value)}
+              className="rounded-md border border-slate-600 bg-slate-700 px-3 py-1.5 text-xs text-slate-200"
+            />
+            <select
+              value={cmpMonths}
+              onChange={(e) => setCmpMonths(Number(e.target.value))}
+              className="rounded-md border border-slate-600 bg-slate-700 px-3 py-1.5 text-xs text-slate-200"
+            >
+              <option value={3}>3 bulan</option>
+              <option value={6}>6 bulan</option>
+              <option value={12}>12 bulan</option>
+            </select>
+            <select
+              value={cmpNearest}
+              onChange={(e) => setCmpNearest(Number(e.target.value))}
+              className="rounded-md border border-slate-600 bg-slate-700 px-3 py-1.5 text-xs text-slate-200"
+              title="Toleransi hari bila tak ada backup tepat di tanggal target"
+            >
+              <option value={0}>Tepat tanggal</option>
+              <option value={1}>±1 hari</option>
+              <option value={3}>±3 hari</option>
+              <option value={7}>±7 hari</option>
+            </select>
+            {cmpData && cmpData.points.length > 0 && (
+              <ExportActions
+                columns={[
+                  { key: "Tanggal_Target", label: "Tanggal Target" },
+                  { key: "Tanggal_Aktual", label: "Tanggal Aktual" },
+                  { key: "Size", label: "Size" },
+                  { key: "Total_File", label: "Total File" },
+                  { key: "Status", label: "Status" },
+                  { key: "Delta_Persen", label: "Delta %" },
+                ]}
+                data={cmpData.points.map((p) => ({
+                  Tanggal_Target: p.target,
+                  Tanggal_Aktual: p.actual || "-",
+                  Size: p.size_formatted,
+                  Total_File: p.jumlah_files ?? "-",
+                  Status: p.status || "-",
+                  Delta_Persen: p.delta_pct ?? "-",
+                }))}
+                filename={`komparasi-tanggal-${submittedIp}`}
+                title={`Komparasi Tanggal Sama - ${submittedIp}`}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {cmpLoading && (
+        <div className="p-8">
+          <div className="space-y-3">{Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-10 animate-pulse rounded bg-slate-700"></div>)}</div>
+        </div>
+      )}
+
+      {!cmpLoading && cmpData && cmpData.points.length === 0 && (
+        <div className="p-8 text-center text-slate-500 text-sm">Tidak ada data untuk tanggal ini.</div>
+      )}
+
+      {!cmpLoading && cmpData && cmpData.points.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-700">
+                <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Tanggal Target</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Tanggal Aktual</th>
+                <th className="px-4 py-2 text-right text-xs font-medium text-slate-400">Total Size</th>
+                <th className="px-4 py-2 text-right text-xs font-medium text-slate-400">Total File</th>
+                <th className="px-4 py-2 text-left text-xs font-medium text-slate-400">Status</th>
+                <th className="px-4 py-2 text-right text-xs font-medium text-slate-400">Δ vs bulan sebelumnya</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cmpData.points.map((p) => (
+                <tr key={p.target} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                  <td className="px-4 py-2 font-medium text-xs text-slate-200">{p.target}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">
+                    {p.found ? (p.actual && p.actual !== p.target ? `${p.actual} (terdekat)` : p.actual) : "—"}
+                  </td>
+                  <td className={`px-4 py-2 text-right text-xs font-medium ${p.found ? "text-blue-400" : "text-slate-600"}`}>
+                    {p.size_formatted}
+                  </td>
+                  <td className="px-4 py-2 text-right text-xs text-emerald-400">
+                    {p.jumlah_files != null ? p.jumlah_files.toLocaleString() : "—"}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{p.status || "—"}</td>
+                  <td className="px-4 py-2 text-right text-xs">
+                    {p.delta_pct == null ? (
+                      <span className="text-slate-600">—</span>
+                    ) : p.delta_pct > 0 ? (
+                      <span className="text-amber-400">▲ {p.delta_pct}%</span>
+                    ) : p.delta_pct < 0 ? (
+                      <span className="text-emerald-400">▼ {Math.abs(p.delta_pct)}%</span>
+                    ) : (
+                      <span className="text-slate-400">0%</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+    </>
   );
 }

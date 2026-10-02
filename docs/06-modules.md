@@ -120,7 +120,8 @@ Dokumen ini mendokumentasikan 26 modul fitur yang tersedia di sistem Super Apps.
   - DR plans & runbooks
   - Backup integrity check
   - Alert jika backup gagal
-- **UI Pages**: `/backup`, `/backup/jobs`, `/backup/verifications`
+  - **Backup Analytics — tab Agregasi (per-server)**: agregasi file & size, plus **komparasi tanggal-sama antar-bulan** (ukuran backup di tanggal yang sama tiap bulan, mis. 2 Okt vs 2 Sep vs 2 Agu …) dengan delta ▲/▼ dan toleransi ±hari
+- **UI Pages**: `/backup`, `/backup/jobs`, `/backup/verifications`, `/modules/backup-analytics`
 - **Data Model**: `backup_jobs`, `backup_history`, `backup_verifications`, `dr_plans`
 - **Integrasi**: Notifications (alert gagal), Assets (database asset), System Monitor
 - **Export**: Backup Report (PDF), DR Plan (PDF)

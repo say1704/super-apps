@@ -1,8 +1,36 @@
 # 📊 SUPER APPS - PROJECT STATUS
 
-**Last Updated:** August 20, 2026 (Phase 161: Backup Check Sorting asc/desc — COMPLETE)
-**Status:** Phase 161 COMPLETE | Backup Check table sort klik-header asc/desc + icon ▲/▼/↕
+**Last Updated:** October 2, 2026 (Phase 162: Backup Same-Date Month-over-Month Comparison — COMPLETE)
+**Status:** Phase 162 COMPLETE | Komparasi tanggal-sama antar-bulan (per-server) di tab Agregasi
 **Location:** /home/soni_buruzi/Workspace/01_Projects/IT_Projects/2026/super-apps
+
+---
+
+## 🔥 LATEST UPDATES (October 2, 2026 — Phase 162: Backup Same-Date Month-over-Month Comparison — COMPLETE)
+
+### Phase 162: Komparasi Tanggal-Sama Antar-Bulan (Backup Analytics) 📅
+- ✅ **Kebutuhan** — bandingkan ukuran backup pada **tanggal kalender yang sama** di beberapa bulan terakhir (mis. 2 Okt 2026 vs 2 Sep vs 2 Agu …), **per-server**
+- ✅ **Penempatan** — disisipkan **di dalam tab "Agregasi"** (`ServerAggregation.tsx`) yang sudah per-server; **tanpa menu/tab/selector baru** (reuse pemilih server + tema + `ExportActions`), sesuai AGENTS.md (minimal, reuse, non-breaking)
+- ✅ **Backend — 1 endpoint baru** `GET /api/v1/backup-analytics/analytics/server/{server_ip}/same-date-comparison?date=YYYY-MM-DD&months=6&nearest=0` (mirror pola endpoint `.../aggregation`: per-server, `_apply_backup_rbac`, filter `server_name`)
+  - `date` default hari ini; `months` default 6 (2–24); `nearest` toleransi ±hari (0=tepat, 0–7)
+  - Helper `_minus_months(d, m)` pakai `calendar.monthrange` → clamp hari 31 ke akhir bulan (mis. 31 Jan −1 bln → 31 Des; Feb → 28/29) tanpa error
+  - Response `{ server_ip, base_date, nearest_days, points:[{target, actual, size_bytes, size_formatted, jumlah_files, status, found, delta_pct}] }`; `delta_pct` = perubahan ukuran vs titik bulan lebih tua; reuse `BackupHistory.format_size`
+- ✅ **Frontend** (`ServerAggregation.tsx`) — sub-section baru "📅 Komparasi Tanggal Sama Antar-Bulan" di bawah tabel agregasi: kontrol date-picker + pilih bulan (3/6/12) + toleransi (tepat/±1/±3/±7); `useSWR` kedua; tabel kolom Tanggal Target · Tanggal Aktual · Total Size · Total File · Status · Δ vs bulan sebelumnya (▲ amber naik / ▼ emerald turun / "—" tak ada data); tombol export CSV/dll
+- ✅ **Tidak menyentuh** `SectionTabs.tsx`, `page.tsx`, tab lain, atau API existing
+
+### Files Modified (Phase 162)
+- `backend/api/backup_analytics.py` — endpoint `.../same-date-comparison` + helper `_minus_months` (di-append, tidak mengubah route lama)
+- `frontend/app/modules/backup-analytics/components/ServerAggregation.tsx` — interface `SameDatePoint`/`SameDateResponse`, state `cmpDate`/`cmpMonths`/`cmpNearest`, `useSWR` kedua, sub-section tabel + export
+
+### Verified
+- ✅ `npx tsc --noEmit` OK (no type errors)
+- ✅ `npm run build` OK — Compiled successfully
+- ✅ Backend import bersih; route terdaftar: `/backup-analytics/analytics/server/{server_ip}/same-date-comparison`
+- ✅ `_minus_months` clamp benar (31 Jan −1 bln → 31 Des 2025; base−6 dari 2026-10-02 = 10-02/09-02/08-02/07-02/06-02/05-02)
+- ✅ 5 worker `/health` → 200; endpoint `.../same-date-comparison` → **401 tanpa token** (konsisten dg `.../aggregation`)
+- ⚠️ **Manual verification** — buka Backup Analytics → tab **Agregasi** → pilih server → muncul tabel agregasi (lama) + sub-section komparasi; ganti date/bulan/toleransi → data ikut berubah; export jalan; cek nilai vs baris DB
+
+### TypeScript: ✅ OK | Build: ✅ OK
 
 ---
 
