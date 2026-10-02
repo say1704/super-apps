@@ -24,3 +24,8 @@ backup_expected_hour: 21   # jam jadwal backup harian (untuk sinyal backup_missi
 backup_grace_hours: 2      # toleransi setelah jadwal sebelum dianggap tidak jalan
 forecast_horizon_days: 30  # early-warning kapasitas: flag bila proyeksi capai threshold ≤ N hari
 capacity_min_alert_pct: 70 # capacity outlier hanya di-flag bila nilai ≥ ini (buang noise ~1%)
+
+# Anomali — knob akurasi (AI Insights)
+ssh_flag_internal_new_ip: false # IP LAN internal baru hanya di-flag bila ada login gagal (kurangi noise ~59%)
+backup_seasonal_suppression: true # redam spike ukuran backup awal-bulan yang berulang (full-backup bulanan)
+anomaly_robust_z: 0        # gate modified z-score (MAD); 0 = nonaktif (default; ensemble 2-dari-3 sudah presisi). Set >0 (mis 3.5) utk ekstra ketat

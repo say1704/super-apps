@@ -31,6 +31,10 @@ BACKUP_EXPECTED_HOUR = 21    # jam jadwal backup harian (0-23, waktu server/UTC 
 BACKUP_GRACE_HOURS = 2       # toleransi setelah jadwal sebelum dianggap "tidak jalan"
 FORECAST_HORIZON_DAYS = 30   # ambang early-warning kapasitas (hari menuju threshold)
 CAPACITY_MIN_ALERT_PCT = 70  # capacity outlier hanya bermakna bila nilai ≥ ini (hindari noise ~1%)
+SSH_FLAG_INTERNAL_NEW_IP = False   # IP LAN internal baru hanya di-flag bila ada login gagal (hindari noise)
+BACKUP_SEASONAL_SUPPRESSION = True # redam spike ukuran backup awal-bulan yang berulang (full-backup bulanan)
+ROBUST_Z = 0.0             # gate modified z-score (Iglewicz-Hoaglin); 0 = nonaktif (default). Ensemble 2-dari-3
+                           # metode sudah jadi mekanisme presisi; aktifkan (mis. 3.5) hanya bila perlu ekstra ketat.
 
 try:
     import yaml as _yaml
@@ -40,6 +44,9 @@ try:
     BACKUP_GRACE_HOURS = int(_agi_cfg.get("backup_grace_hours", BACKUP_GRACE_HOURS))
     FORECAST_HORIZON_DAYS = int(_agi_cfg.get("forecast_horizon_days", FORECAST_HORIZON_DAYS))
     CAPACITY_MIN_ALERT_PCT = float(_agi_cfg.get("capacity_min_alert_pct", CAPACITY_MIN_ALERT_PCT))
+    SSH_FLAG_INTERNAL_NEW_IP = bool(_agi_cfg.get("ssh_flag_internal_new_ip", SSH_FLAG_INTERNAL_NEW_IP))
+    BACKUP_SEASONAL_SUPPRESSION = bool(_agi_cfg.get("backup_seasonal_suppression", BACKUP_SEASONAL_SUPPRESSION))
+    ROBUST_Z = float(_agi_cfg.get("anomaly_robust_z", ROBUST_Z))
 except Exception:
     pass
 
@@ -140,6 +147,43 @@ def _context_phrase(cur: float, base: float, direction: str, base_str: str) -> s
     return f"{updown} tajam dari biasanya yang nyaris nol"
 
 
+def _is_internal_ip(ip: str) -> bool:
+    """True untuk IP privat/loopback/link-local (RFC1918 dll). IP tak valid dianggap internal (aman)."""
+    try:
+        import ipaddress
+        return ipaddress.ip_address(str(ip).strip()).is_private
+    except (ValueError, AttributeError):
+        return True
+
+
+def _robust_z(values: List[float], x: float) -> float:
+    """Modified z-score (Iglewicz-Hoaglin): 0.6745*(x-median)/MAD. Fallback std bila MAD==0.
+    Tahan terhadap outlier (masking) & deret pendek — tanpa mengubah primitive ml/anomaly.py."""
+    try:
+        import numpy as _np
+        arr = _np.asarray(values, dtype=float)
+        med = _np.median(arr)
+        mad = _np.median(_np.abs(arr - med))
+        if mad > 0:
+            return abs(0.6745 * (float(x) - float(med)) / float(mad))
+        std = _np.std(arr)
+        if std > 0:
+            return abs((float(x) - float(_np.mean(arr))) / float(std))
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def _minus_months(d: date, m: int) -> date:
+    """Tanggal yang sama m bulan sebelumnya; hari di-clamp ke akhir bulan (lokal utk engine)."""
+    import calendar
+    y, mo = d.year, d.month - m
+    while mo <= 0:
+        mo += 12
+        y -= 1
+    return date(y, mo, min(d.day, calendar.monthrange(y, mo)[1]))
+
+
 def _detect_series(module: str, metric_label: str, signal_type: str,
                    by_entity: Dict[str, Dict[date, float]], start: date, end: date,
                    owner_by_entity: Optional[Dict[str, str]] = None,
@@ -174,6 +218,9 @@ def _detect_series(module: str, metric_label: str, signal_type: str,
                 continue
             if only_high and a.get("direction") != "spike":
                 continue
+            # Gate robust: saring outlier palsu (IsolationForest paksa ~5%, masking z-score, deret pendek)
+            if ROBUST_Z and _robust_z(values, a["size"]) < ROBUST_Z:
+                continue
             direction = a.get("direction", "spike")
             cur_str = _fmt_val(a["size"], unit)
             base_str = _fmt_val(baseline, unit)
@@ -207,6 +254,7 @@ def detect_ssh(db: Session) -> List[dict]:
     ip_seen: Dict[str, Dict[str, date]] = defaultdict(dict)          # host -> {source_ip: first scan_date}
     failed_users_by_host: Dict[str, Counter] = defaultdict(Counter)  # user gagal (recent) per host
     users_by_ip: Dict[tuple, set] = defaultdict(set)                 # (host, source_ip) -> {username} (recent)
+    failed_ips_by_host: Dict[str, set] = defaultdict(set)            # host -> {source_ip} punya login gagal (recent)
     for host, sday, sip, uname, status, owner in rows:
         if host is None or sday is None:
             continue
@@ -215,6 +263,8 @@ def detect_ssh(db: Session) -> List[dict]:
             failed_by_host[host][sday] += 1
             if sday >= recent_start and uname:
                 failed_users_by_host[host][uname] += 1
+            if sday >= recent_start and sip:
+                failed_ips_by_host[host].add(sip)
         if sip:
             prev = ip_seen[host].get(sip)
             if prev is None or sday < prev:
@@ -238,9 +288,14 @@ def detect_ssh(db: Session) -> List[dict]:
             if top:
                 f["message"] += " Pengguna paling sering dicoba: " + ", ".join(f"{u} ({c}×)" for u, c in top) + "."
 
-    # Novelty: source_ip baru di window terbaru yang tak ada di baseline (+ username per IP)
+    # Novelty: source_ip baru di window terbaru yang tak ada di baseline (+ username per IP).
+    # Kurangi noise: IP LAN internal baru hanya di-flag bila punya login gagal (indikasi lateral/
+    # brute-force) kecuali SSH_FLAG_INTERNAL_NEW_IP=True; IP eksternal/publik baru selalu di-flag.
     for host, ips in ip_seen.items():
         new_ips = [ip for ip, first in ips.items() if first >= recent_start]
+        if not SSH_FLAG_INTERNAL_NEW_IP:
+            new_ips = [ip for ip in new_ips
+                       if (not _is_internal_ip(ip)) or ip in failed_ips_by_host.get(host, set())]
         if not new_ips:
             continue
         parts = []
@@ -329,6 +384,53 @@ def detect_vulnerability(db: Session) -> List[dict]:
                           by_ip, start, end, owner, only_high=True, unit="count")
 
 
+def _recalibrate_backup(findings: List[dict], by_srv: Dict[str, Dict[date, float]]) -> List[dict]:
+    """Severity backup by MAGNITUDO (bukan konsensus metode), sensitif/"gigit"; drop (backup mengecil
+    = mungkin gagal/parsial) dinilai lebih kritis daripada spike. Spike awal-bulan yang berulang
+    (full-backup bulanan) TIDAK dibuang — tetap tampil + catatan, tapi severity dibatasi maks 'medium'."""
+    out: List[dict] = []
+    for f in findings:
+        if f.get("signal_type") != "backup_size_anomaly":
+            out.append(f)
+            continue
+        cur, base, adate = f.get("metric_current"), f.get("metric_baseline"), f.get("period_to")
+        direction = "drop" if (cur is not None and base is not None and cur < base) else "spike"
+        dev = abs(cur - base) / base if (cur is not None and base) else 0.0
+        # Deteksi pola musiman: spike awal-bulan yang mirip nilai bulan lalu → kemungkinan full-backup rutin
+        seasonal = False
+        if (BACKUP_SEASONAL_SUPPRESSION and direction == "spike"
+                and isinstance(adate, date) and adate.day <= 3 and cur):
+            series = by_srv.get(f.get("entity"), {})
+            prev_t = _minus_months(adate, 1)
+            prev_val = None
+            for off in range(0, 4):  # tepat, lalu ±1..3 hari di sekitar tanggal bulan lalu
+                cands = [prev_t] if off == 0 else [prev_t - timedelta(days=off), prev_t + timedelta(days=off)]
+                for cand in cands:
+                    if cand in series:
+                        prev_val = series[cand]
+                        break
+                if prev_val is not None:
+                    break
+            if prev_val and abs(cur - prev_val) / prev_val <= 0.25:
+                seasonal = True
+        # Severity berbasis magnitudo — sensitif ("gigit"): deviasi sedang pun tampil menonjol
+        if direction == "drop":
+            sev = "critical" if dev >= 0.5 else ("high" if dev >= 0.2 else "medium")  # backup mengecil = risiko
+        else:
+            sev = ("low" if dev < 0.2 else "medium" if dev < 0.5
+                   else "high" if dev < 1.0 else "critical")
+        # Pola musiman awal-bulan (full-backup rutin): TETAP tampil + catatan, tapi dibatasi maks 'medium'
+        # agar tak banjir critical tiap awal bulan (bukan dibuang/di-low-kan).
+        if seasonal:
+            if _SEV_RANK.get(sev, 1) > _SEV_RANK["medium"]:
+                sev = "medium"
+            f["message"] = (f.get("message", "") +
+                            " Pola serupa pada tanggal yang sama bulan lalu — kemungkinan full-backup rutin.")
+        f["severity"] = sev
+        out.append(f)
+    return out
+
+
 def detect_backup(db: Session) -> List[dict]:
     """Reuse primitive ml/anomaly atas ukuran backup — sejalan dengan modul Backup Analytics."""
     end = _today()
@@ -343,6 +445,14 @@ def detect_backup(db: Session) -> List[dict]:
     # backup: anomali ukuran naik ATAU turun (turun = mungkin backup gagal/parsial)
     findings = _detect_series("backup-analytics", "Ukuran backup", "backup_size_anomaly",
                               by_srv, start, end, owner, only_high=False, unit="bytes")
+    # Konteks musiman: deret lebih lebar (mencakup tanggal-sama bulan lalu yang di luar baseline 30h)
+    # — hanya untuk cek suppression awal-bulan; baseline deteksi tetap 30 hari (tak berubah).
+    ext_start = end - timedelta(days=BASELINE_DAYS + 35)
+    ext_rows = (db.query(BackupHistory.server_name, BackupHistory.backup_date,
+                         BackupHistory.total_size_bytes)
+                .filter(BackupHistory.backup_date >= ext_start).all())
+    by_srv_ext = _series_map([(r[0], r[1], r[2]) for r in ext_rows], ext_start, end)
+    findings = _recalibrate_backup(findings, by_srv_ext)
     findings += detect_backup_missing(rows, owner, start, end)
     return findings
 
