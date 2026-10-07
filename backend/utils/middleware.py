@@ -137,6 +137,8 @@ async def catch_all_exception_handler(request: Request, exc: Exception):
 def setup_middleware(app):
     """Register all middleware and exception handlers."""
     app.add_middleware(TimingMiddleware)
+    from utils.activity_log_middleware import ActivityLogMiddleware
+    app.add_middleware(ActivityLogMiddleware)
     app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

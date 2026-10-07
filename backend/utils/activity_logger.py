@@ -13,9 +13,33 @@ Examples:
 from sqlalchemy.orm import Session
 from models import ActivityLog
 from typing import Optional, Dict, Any
+from contextvars import ContextVar
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# Per-request marker so the auto-activity middleware can tell whether a handler
+# already recorded an activity for this request (dedup / fill-gaps). The holder
+# is a mutable object shared by reference across the BaseHTTPMiddleware task
+# boundary, so flipping .logged here is visible to the middleware.
+class _AutoLogFlag:
+    __slots__ = ("logged",)
+
+    def __init__(self):
+        self.logged = False
+
+
+_auto_log_flag: "ContextVar[Optional[_AutoLogFlag]]" = ContextVar(
+    "auto_log_flag", default=None
+)
+
+
+def mark_manual_log():
+    """Mark that a manual activity log was recorded for the current request."""
+    holder = _auto_log_flag.get(None)
+    if holder is not None:
+        holder.logged = True
 
 # Activity types
 ACTIVITY_TYPES = {
@@ -103,6 +127,7 @@ def log_activity(
             asset_code=asset_code
         )
         db.add(activity)
+        mark_manual_log()
     except Exception as e:
         logger.warning("Failed to log activity: %s", e)
         try:
