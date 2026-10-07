@@ -51,7 +51,7 @@ def _batch_fetch_servers(db, cutoff, min_records=0, current_user=None):
 
 
 @router.get("/predict/{server_ip}", response_model=dict)
-async def predict_server(
+def predict_server(
     server_ip: str,
     horizon_months: int = Query(default=6, ge=1, le=12, description="Prediction horizon in months"),
     model: str = Query(default="auto", description="Model: auto, linear, polynomial, exponential_smoothing, prophet, sarimax"),
@@ -111,7 +111,7 @@ async def predict_server(
 
 
 @router.get("/predict-all", response_model=dict)
-async def predict_all_servers(
+def predict_all_servers(
     horizon_months: int = Query(default=6, ge=1, le=12),
     days: int = Query(default=180),
     resample: str = Query(default="W"),
@@ -153,7 +153,7 @@ async def predict_all_servers(
 
 
 @router.get("/anomalies/{server_ip}", response_model=dict)
-async def detect_anomalies(
+def detect_anomalies(
     server_ip: str,
     method: str = Query(default="ensemble", description="Detection method: zscore, iqr, isolation_forest, ensemble"),
     days: int = Query(default=90, description="Days of historical data to analyze"),
@@ -185,7 +185,7 @@ async def detect_anomalies(
 
 
 @router.get("/anomalies-all", response_model=dict)
-async def detect_anomalies_all(
+def detect_anomalies_all(
     days: int = Query(default=90),
     method: str = Query(default="ensemble"),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -223,7 +223,7 @@ async def detect_anomalies_all(
 
 
 @router.get("/seasonality/{server_ip}", response_model=dict)
-async def detect_seasonality(
+def detect_seasonality(
     server_ip: str,
     days: int = Query(default=180),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -256,7 +256,7 @@ async def detect_seasonality(
 
 
 @router.get("/models", response_model=dict)
-async def list_models():
+def list_models():
     """
     List available prediction models and their status.
     """
@@ -311,7 +311,7 @@ async def list_models():
 
 
 @router.post("/retrain/{server_ip}", response_model=dict)
-async def retrain_model(
+def retrain_model(
     server_ip: str,
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
@@ -328,7 +328,7 @@ async def retrain_model(
 
 
 @router.get("/cache/stats", response_model=dict)
-async def cache_stats(current_user: User = Depends(get_current_user)):
+def cache_stats(current_user: User = Depends(get_current_user)):
     """
     Get model cache statistics.
     """
@@ -336,7 +336,7 @@ async def cache_stats(current_user: User = Depends(get_current_user)):
 
 
 @router.get("/accuracy/{server_ip}", response_model=dict)
-async def get_accuracy_metrics(
+def get_accuracy_metrics(
     server_ip: str,
     days: int = Query(default=180),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -429,7 +429,7 @@ async def get_accuracy_metrics(
 
 
 @router.get("/health-score/{server_ip}", response_model=dict)
-async def get_health_score(
+def get_health_score(
     server_ip: str,
     days: int = Query(default=30, description="Days of historical data to analyze"),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -472,7 +472,7 @@ async def get_health_score(
 
 
 @router.get("/health-score-all", response_model=dict)
-async def get_health_score_all(
+def get_health_score_all(
     days: int = Query(default=30),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
@@ -516,7 +516,7 @@ async def get_health_score_all(
 
 
 @router.get("/trend/{server_ip}", response_model=dict)
-async def get_trend(
+def get_trend(
     server_ip: str,
     days: int = Query(default=90),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -558,7 +558,7 @@ async def get_trend(
 
 
 @router.get("/failure-risk/{server_ip}", response_model=dict)
-async def get_failure_risk(
+def get_failure_risk(
     server_ip: str,
     days: int = Query(default=90),
     prediction_days: int = Query(default=7, description="Days ahead to predict"),
@@ -603,7 +603,7 @@ async def get_failure_risk(
 
 
 @router.get("/failure-risk-all", response_model=dict)
-async def get_failure_risk_all(
+def get_failure_risk_all(
     days: int = Query(default=90),
     prediction_days: int = Query(default=7),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
@@ -651,7 +651,7 @@ async def get_failure_risk_all(
 
 
 @router.get("/clusters", response_model=dict)
-async def get_clusters(
+def get_clusters(
     days: int = Query(default=90),
     db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
 ):
@@ -685,7 +685,7 @@ async def get_clusters(
 
 
 @router.get("/anomaly-forecast/{server_ip}", response_model=dict)
-async def get_anomaly_forecast(
+def get_anomaly_forecast(
     server_ip: str,
     horizon_months: int = Query(default=3, ge=1, le=6),
     days: int = Query(default=180),
@@ -745,7 +745,7 @@ async def get_anomaly_forecast(
 
 
 @router.get("/enhanced-predict-all", response_model=dict)
-async def enhanced_predict_all(
+def enhanced_predict_all(
     horizon_months: int = Query(default=6, ge=1, le=12),
     days: int = Query(default=180),
     resample: str = Query(default="W"),
