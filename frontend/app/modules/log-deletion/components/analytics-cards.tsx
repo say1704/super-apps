@@ -10,7 +10,7 @@ interface AnalyticsCardsProps {
 export function AnalyticsCards({ advancedData, loading }: AnalyticsCardsProps) {
   if (loading || !advancedData) {
     return (
-      <div className="sticky top-0 z-10 bg-white dark:bg-gray-800 shadow-sm rounded-lg p-4 mb-4">
+      <div className="bg-white dark:bg-gray-800 shadow-sm rounded-lg p-4 mb-4">
         <div className="text-center py-4 text-gray-500 dark:text-gray-400">Loading analytics...</div>
       </div>
     );
@@ -20,7 +20,7 @@ export function AnalyticsCards({ advancedData, loading }: AnalyticsCardsProps) {
   const srv = advancedData.server_analytics;
 
   return (
-    <div className="sticky top-0 z-10 bg-white dark:bg-gray-800 shadow-sm rounded-lg p-4 mb-4">
+    <div className="bg-white dark:bg-gray-800 shadow-sm rounded-lg p-4 mb-4">
       {/* 6 Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
         <div className="p-3 rounded-lg bg-gray-50 dark:bg-gray-900">
