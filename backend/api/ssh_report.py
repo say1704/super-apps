@@ -16,11 +16,6 @@ logger = logging.getLogger("ssh_report")
 
 ENABLE_SUDO_MODE = os.getenv("ENABLE_SUDO_MODE", "false").lower() == "true"
 
-# Batas thread batch scan: tiap scan menahan 1 koneksi DB sepanjang import, sedangkan pool
-# SQLAlchemy per-proses hanya 5+10=15. Dibatasi agar menyisakan koneksi utk auth/poll-progress
-# (cegah "QueuePool limit reached" → 500). Tulis SQLite serial, jadi paralelisme tinggi tak membantu.
-SSH_BATCH_MAX_WORKERS = 8
-
 # Binary path map for sudo mode — sudo may not inherit user PATH
 _CMD_MAP = {
     'ls': '/usr/bin/ls',
@@ -305,7 +300,7 @@ class BatchScanRequest(BaseModel):
     port: int = 22
     ssh_report_dir: str = "/var/log/sa"
     auth_mode: Optional[str] = "sudo"
-    max_workers: int = 8
+    max_workers: int = 50
     mode: Optional[str] = "auto"
     overwrite: bool = False  # True = re-parse & timpa data lama pada (host, scan_date)
 
@@ -734,11 +729,8 @@ async def batch_scan_all_servers(
         except Exception as exc:
             return {"hostname": hostname, "success": False, "error": str(exc)}
 
-    # Clamp konkurensi ke kapasitas pool DB per-proses (hindari "QueuePool limit reached" → 500 poll)
-    workers = max(1, min(request.max_workers, SSH_BATCH_MAX_WORKERS))
-
     def _run_batch():
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadPoolExecutor(max_workers=request.max_workers) as pool:
             futures = {pool.submit(_scan_single_server, h): h for h in server_list}
             for future in as_completed(futures):
                 result = future.result()
@@ -767,7 +759,7 @@ async def batch_scan_all_servers(
         "operation_id": operation_id,
         "status": "started",
         "total_servers": len(server_list),
-        "max_workers": workers,
+        "max_workers": request.max_workers,
         "message": f"Parallel scan started for {len(server_list)} servers.",
     }
 

@@ -39,7 +39,7 @@ export default function SSHReportModule() {
   const [bulkShowPassword, setBulkShowPassword] = useState(false);
   const [bulkSelectFromList, setBulkSelectFromList] = useState(false);
   const [bulkSelectedServers, setBulkSelectedServers] = useState<string[]>([]);
-  const [bulkMaxWorkers, setBulkMaxWorkers] = useState(8);
+  const [bulkMaxWorkers, setBulkMaxWorkers] = useState(50);
   const [fetchData, setFetchData] = useState({
     hostname: '',
     username: '',
@@ -688,9 +688,9 @@ let alertMsg = `✅ Scan Complete!\n\n`;
                   <input
                     type="number"
                     min={1}
-                    max={16}
+                    max={200}
                     value={bulkMaxWorkers}
-                    onChange={(e) => setBulkMaxWorkers(parseInt(e.target.value) || 8)}
+                    onChange={(e) => setBulkMaxWorkers(parseInt(e.target.value) || 50)}
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-slate-700 text-gray-900 dark:text-white"
                   />
                 </div>
