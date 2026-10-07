@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from database import get_db
+from database import get_db, SessionLocal
 from models import User, AnomalyFinding
 from api.dependencies import get_current_user
 from utils import anomaly_engine
@@ -71,28 +72,42 @@ async def summary(
 @router.post("/scan")
 async def scan(
     module: str = Query("all"),
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Jalankan deteksi on-demand (semua modul atau satu), simpan, narasikan yang penting."""
+    """Jalankan deteksi on-demand (semua modul atau satu), simpan, narasikan yang penting.
+
+    Kerja berat (run_all/persist/narrate) dijalankan di threadpool dgn session sendiri agar
+    event-loop worker tetap responsif (request lain di worker yg sama tidak ikut ngantre).
+    """
     if module and module != "all" and module not in anomaly_engine.DETECTORS:
         raise HTTPException(status_code=400, detail=f"Modul tidak dikenal: {module}")
-    records = anomaly_engine.run_all(db) if module == "all" else anomaly_engine.run_module(db, module)
-    new_findings = anomaly_engine.persist(db, records)
-    try:
-        await anomaly_engine.narrate(db, new_findings)
-    except Exception as e:
-        logger.debug("narrate on scan fail: %s", e)
+
+    def _work():
+        import asyncio
+        tdb = SessionLocal()
+        try:
+            records = anomaly_engine.run_all(tdb) if module == "all" else anomaly_engine.run_module(tdb, module)
+            new_findings = anomaly_engine.persist(tdb, records)
+            try:
+                asyncio.run(anomaly_engine.narrate(tdb, new_findings))
+            except Exception as e:
+                logger.debug("narrate on scan fail: %s", e)
+            return len(records), len(new_findings)
+        finally:
+            tdb.close()
+
+    records_count, new_count = await run_in_threadpool(_work)
+
     # Beri tahu sesi lain agar tabel AI Insights auto-refresh
     try:
         from api.dependencies import broadcast_event
-        await broadcast_event("anomaly_detected", {"module": module, "new_findings": len(new_findings)})
+        await broadcast_event("anomaly_detected", {"module": module, "new_findings": new_count})
     except Exception as e:
         logger.debug("broadcast anomaly_detected fail: %s", e)
     return {
         "scanned_module": module,
-        "records": len(records),
-        "new_findings": len(new_findings),
+        "records": records_count,
+        "new_findings": new_count,
     }
 
 

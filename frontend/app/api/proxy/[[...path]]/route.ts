@@ -65,7 +65,10 @@ function isPinnedToPrimary(path: string, method: string): boolean {
     (path.startsWith('/api/v1/tasks') ||
       path.startsWith('/api/v1/worklog') ||
       path.startsWith('/api/v1/incident') ||
-      path.startsWith('/api/v1/notifications'))
+      path.startsWith('/api/v1/notifications') ||
+      // Anomaly/AI Insights writes call broadcast_event ("anomaly_detected") → pin to worker-1 so SSE
+      // clients get it; also keeps the heavy scan off the user's interactive (sticky) worker. GET reads distribute.
+      path.startsWith('/api/v1/anomaly'))
   ) {
     return true;
   }

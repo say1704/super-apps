@@ -15,6 +15,14 @@ SQLALCHEMY_DATABASE_URL = f"sqlite:///{get_db_path()}"
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False, "timeout": 30},
+    # Pool per-proses diperbesar agar batch/scan paralel (SSH/Capacity sampai 50 worker, masing-masing
+    # menahan 1 koneksi) tak menghabiskan pool & tetap sisa koneksi utk auth/poll/UI (cegah
+    # "QueuePool limit reached" → 500). SQLite menangani banyak koneksi (file-based); tulis diserialisasi WAL,
+    # connect_args timeout=30 sudah jadi busy_timeout 30s.
+    pool_size=20,
+    max_overflow=40,
+    pool_timeout=30,
+    pool_pre_ping=True,
 )
 
 
