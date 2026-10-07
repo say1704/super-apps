@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import func, and_, Integer
+from sqlalchemy import func, and_, or_, case, Integer
 from datetime import datetime, timedelta, timezone
 from utils.timezone import utcnow
 from typing import Optional, List
@@ -47,13 +47,10 @@ async def get_worklog(
     owner_filter = get_worklog_filter(current_user)
     if owner_filter is not None:
         query = query.filter(owner_filter)
+    UNFINISHED = WorkLog.status == "in_progress"
+
+    # Filter non-tanggal/non-status
     filters = []
-    if start_date:
-        filters.append(WorkLog.date >= datetime.strptime(start_date, "%Y-%m-%d").date())
-    if end_date:
-        filters.append(WorkLog.date <= datetime.strptime(end_date, "%Y-%m-%d").date())
-    if status:
-        filters.append(WorkLog.status == status)
     if category and category != "All":
         filters.append(WorkLog.category == category)
     if tags:
@@ -61,12 +58,40 @@ async def get_worklog(
         filters.append(WorkLog.tags.ilike(f"%{escaped_tags}%", escape="\\"))
     if task_id:
         filters.append(WorkLog.task_id == task_id)
+
+    # Window tanggal
+    date_conds = []
+    if start_date:
+        date_conds.append(WorkLog.date >= datetime.strptime(start_date, "%Y-%m-%d").date())
+    if end_date:
+        date_conds.append(WorkLog.date <= datetime.strptime(end_date, "%Y-%m-%d").date())
+
+    # Carry-over: tugas belum selesai (in_progress) jangan terpotong window tanggal.
+    carry_over = False
+    if status:
+        if status == "in_progress":
+            # Tampilkan SEMUA yang belum selesai tanpa batas tanggal (yang lama tetap kelihatan)
+            filters.append(UNFINISHED)
+        else:
+            filters.append(WorkLog.status == status)
+            filters.extend(date_conds)
+    else:
+        # Status = All → item dalam window ATAU semua in_progress (carry-over)
+        carry_over = True
+        if date_conds:
+            filters.append(or_(and_(*date_conds), UNFINISHED))
+
     if filters:
         query = query.filter(and_(*filters))
     total = query.count()
     offset = get_offset(page, page_size)
     sort_column = getattr(WorkLog, sort_by, WorkLog.created_at)
-    query = query.order_by(sort_column.asc() if sort_order.lower() == "asc" else sort_column.desc())
+    primary = sort_column.asc() if sort_order.lower() == "asc" else sort_column.desc()
+    if carry_over:
+        # Belum selesai selalu di ATAS (tanpa perlu scroll), lalu urutan normal
+        query = query.order_by(case((UNFINISHED, 0), else_=1), primary)
+    else:
+        query = query.order_by(primary)
     records = query.offset(offset).limit(page_size).all()
     pagination = calculate_pagination(page, page_size, total)
 
