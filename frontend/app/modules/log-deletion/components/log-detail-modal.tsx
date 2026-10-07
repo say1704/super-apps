@@ -48,9 +48,9 @@ export function LogDetailModal({ item, show, onClose, onEdit }: LogDetailModalPr
               <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Size</p>
               <p className="text-lg text-gray-900 dark:text-white">{item.size}</p>
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Path</p>
-              <p className="text-lg text-gray-900 dark:text-white">{item.path || '-'}</p>
+              <p className="text-lg text-gray-900 dark:text-white break-all">{item.path || '-'}</p>
             </div>
             <div>
               <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Execution Date</p>
