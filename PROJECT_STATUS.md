@@ -1,10 +1,42 @@
 # 📊 SUPER APPS - PROJECT STATUS
 
-**Last Updated:** October 2, 2026 (Phase 162: Backup Same-Date Month-over-Month Comparison — COMPLETE)
-**Status:** Phase 162 COMPLETE | Komparasi tanggal-sama antar-bulan (per-server) di tab Agregasi
+**Last Updated:** October 8, 2026 11:30 WIB (Phase 163: Backup Check — Daftar File per Hari di Server History — COMPLETE)
+**Status:** Phase 163 COMPLETE | Dropdown expandable daftar file ter-backup per hari per server (live search)
 **Location:** /home/soni_buruzi/Workspace/01_Projects/IT_Projects/2026/super-apps
 
 ---
+
+## 🔥 LATEST UPDATES (October 8, 2026 11:30 WIB — Phase 163: Backup Check — Daftar File per Hari (Server History) — COMPLETE)
+
+### Phase 163: Daftar File Ter-backup per Hari (Backup Check → Server History) 📂
+- ✅ **Kebutuhan** — di modul **Backup Check**, klik server membuka **📊 Server History** (Date/Files/Size/Status per hari). Ditambah kemampuan **expand baris hari** untuk melihat **file apa saja yang ter-backup** hari itu (mirip dropdown Audit File)
+- ✅ **Pola parsing tetap sama, hanya menambah ekstraksi** — `parse_log_content` (ringkasan `Jumlah Files`/`Total Size`) **tidak diubah**; ditambah fungsi baru `parse_file_list()` yang mendukung **2 format log** (dikonfirmasi user):
+  - Format 1 (flat): baris di antara `Daftar file:` dan baris kosong / `Jumlah dan Size:`; duplikat dipertahankan (cocok `Jumlah Files`)
+  - Format 2 (grouped): blok `===== FILES BACKED UP ... =====`, grup `[LOG]/[APP]/[SCRIPT]`, berakhir di `FILES RENAMED`; `(tidak ada file)` di-skip
+- ✅ **Capture-saat-scan (zero-trust, tanpa SSH ulang)** — daftar file ditangkap saat **Check Backups**, disimpan ke kolom baru **nullable** `BackupHistory.file_list` (`Text`/JSON). Method SSH baru `read_file_full()` (`head -n N`); `read_file` lama (grep ringkasan) **tidak diubah**
+- ✅ **Self-healing (Opsi A)** — saat scan, record lama yang `file_list`-nya masih `NULL` **dan** masih dalam window tanggal scan akan **diisi** (field lain tak disentuh); record yang sudah punya `file_list` di-skip. Record historis lama tetap `NULL` → UI tampil "belum tersedia (perlu scan ulang)"
+- ✅ **Endpoint lazy baru** `GET /api/backup-check/server/{server_name}/history/{backup_date}/files?q=&page=&page_size=` — reuse `_apply_backup_rbac` + `calculate_pagination`, filter `?q=` case-insensitive; endpoint `/history` lama tidak disentuh
+- ✅ **Frontend** (`server-history-modal.tsx`) — baris Server History **expandable** (chevron ▶) + **lazy-load**; pencarian file **live/autocomplete** (debounce 300ms, tanpa Enter); input **tetap ter-mount** saat loading (spinner hanya di area daftar) sehingga **fokus kursor tidak hilang**
+- ✅ **Migrasi** `migrate_backup_file_list.py` (ALTER TABLE tambah kolom `file_list`; pakai `get_db_path()` → `data/superapps.db`)
+- ⚠️ **Catatan 2 model** — model `BackupHistory` yang live ada di `backend/models/backup.py` (package `models/` meng-shadow `models.py` lama); kolom ditambahkan di file yang **live**
+
+### Files Modified (Phase 163)
+- `backend/utils/backup_parser.py` — fungsi baru `parse_file_list()` + konstanta `MAX_FILE_LIST_ENTRIES`
+- `backend/utils/ssh_handler.py` — method baru `read_file_full()`
+- `backend/models/backup.py` — kolom baru `file_list = Column(Text, nullable=True)`
+- `backend/api/backup_check_simple.py` — capture + self-healing `file_list` di `process_backup_sync`; endpoint `.../history/{backup_date}/files`
+- `backend/migrate_backup_file_list.py` — migrasi kolom (baru)
+- `frontend/app/modules/backup-check/components/server-history-modal.tsx` — baris expandable, lazy-load, live search (debounce), perbaikan fokus input
+
+### Verified
+- ✅ Unit test `parse_file_list` terhadap **2 sample log asli** user → jumlah entri cocok, section benar, `(tidak ada file)` ter-skip
+- ✅ `py_compile` backend OK; import chain OK; route `.../history/{backup_date}/files` terdaftar
+- ✅ `npx tsc --noEmit` OK; `npm run build` OK
+- ✅ Migrasi dijalankan di `data/superapps.db` — kolom `file_list` ada; **146 record 2026-10-08** sudah terisi setelah scan
+- ✅ 5 worker + frontend online (PM2 project home); `https://localhost:3443/` → HTTP 200
+- ⚠️ **Manual verification** — hard-refresh → Server History → expand baris hari → daftar file muncul (badge section), live search tanpa kehilangan fokus; record lama tampil "belum tersedia"
+
+### TypeScript: ✅ OK | Build: ✅ OK
 
 ## 🔥 LATEST UPDATES (October 2, 2026 — Phase 162: Backup Same-Date Month-over-Month Comparison — COMPLETE)
 

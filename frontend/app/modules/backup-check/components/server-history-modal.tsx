@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, useMemo } from 'react';
+import { Fragment, useEffect, useRef, useState, useMemo } from 'react';
 import { apiRequest } from '@/lib/auth';
 import ExportButton from '@/components/ExportButton';
 import { exportBackupCheckHistoryPDF } from '@/lib/export';
@@ -74,6 +74,9 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
   const [filesData, setFilesData] = useState<FilesState | null>(null);
   const [filesPage, setFilesPage] = useState(1);
   const [filesSearch, setFilesSearch] = useState('');
+  // Skip the debounced search effect once right after expanding a row
+  // (toggleExpand already triggers the initial load with an empty query).
+  const skipNextSearchRef = useRef(false);
 
   const daysForPeriod = () => (period === 'all' ? ALL_DAYS : parseInt(period, 10));
 
@@ -119,12 +122,28 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
       setExpandedDate(null);
       return;
     }
+    skipNextSearchRef.current = true; // the reset below must not double-fire the search effect
     setExpandedDate(backupDate);
     setFilesPage(1);
     setFilesSearch('');
     setFilesData(null);
     loadFiles(backupDate, 1, '');
   };
+
+  // Live search (autocomplete): debounce query typing -> reload page 1
+  useEffect(() => {
+    if (!expandedDate) return;
+    if (skipNextSearchRef.current) {
+      skipNextSearchRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      setFilesPage(1);
+      loadFiles(expandedDate, 1, filesSearch);
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filesSearch]);
 
   const goToFilesPage = (next: number) => {
     if (!expandedDate) return;
@@ -311,7 +330,7 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
                   {isExpanded && (
                     <tr className="bg-gray-100 dark:bg-gray-900/60">
                       <td colSpan={5} className="px-4 py-4">
-                        {filesLoading ? (
+                        {(filesLoading && !filesData) ? (
                           <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-2">
                             <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
                             Loading files...
@@ -327,8 +346,7 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
                                 type="text"
                                 value={filesSearch}
                                 onChange={(e) => setFilesSearch(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') { setFilesPage(1); loadFiles(record.backup_date, 1, filesSearch); } }}
-                                placeholder="Cari file... (Enter)"
+                                placeholder="Cari file..."
                                 className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white w-64 max-w-full"
                               />
                               {filesData.pagination && (
@@ -342,7 +360,12 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
                                 Daftar dipotong (maksimum tersimpan tercapai) — sebagian file mungkin tidak tampil.
                               </div>
                             )}
-                            {filesData.files.length === 0 ? (
+                            {filesLoading ? (
+                              <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-4">
+                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                Memuat...
+                              </div>
+                            ) : filesData.files.length === 0 ? (
                               <div className="text-sm text-gray-500 dark:text-gray-400 py-2">Tidak ada file yang cocok.</div>
                             ) : (
                               <ul className="divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">

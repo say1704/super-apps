@@ -291,6 +291,8 @@ Query `same-date-comparison`: `date=YYYY-MM-DD` (default hari ini), `months` (2â
 | GET | `/api/capacity-planning/servers` | Yes | Server list with latest metrics, max 365 hari |
 | GET | `/api/backup-check/export` | Yes | Export backup records per-date (PDF), max 365 hari |
 | GET | `/api/backup-check/servers` | Yes | Server list with backup status, max 365 hari |
+| GET | `/api/backup-check/server/{server_name}/history` | Yes | Daily backup history per server (Date/Files/Size/Status) + statistik |
+| GET | `/api/backup-check/server/{server_name}/history/{backup_date}/files` | Yes | Daftar file ter-backup pada 1 tanggal (lazy, paginasi, filter `?q=`); dari `file_list` yang ditangkap saat scan â€” _(ditambah 2026-10-08)_ |
 
 Note: Semua endpoint dengan parameter `from_date`/`to_date` memiliki batas maksimal 365 hari. Backend mengembalikan 400 jika rentang melebihi 365 hari.
 

@@ -83,7 +83,7 @@
 ### Backup & DR
 
 - `backup_jobs` -- backup job configuration
-- `backup_history` -- execution history
+- `backup_history` -- execution history (kolom `file_list` Text/JSON nullable: daftar file ter-backup per hari, ditangkap saat scan — _2026-10-08_)
 - `backup_verifications` -- restore test results
 - `disaster_recovery_plans` -- DRP documents
 
