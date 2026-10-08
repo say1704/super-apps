@@ -225,6 +225,29 @@ class SSHConnection:
         except Exception as e:
             return False, "", f"Error: {str(e)}"
     
+    def read_file_full(self, filepath: str, max_lines: int = 5000) -> Tuple[bool, str, str]:
+        """
+        Read the (capped) full content of a log file, used to extract the
+        backed-up file list. Uses `head -n max_lines` to bound transfer for
+        very large logs. Does not replace read_file (summary extraction).
+        Returns: (success, content, message)
+        """
+        if not self.ssh:
+            return False, "", "Not connected"
+
+        try:
+            cmd = f"head -n {int(max_lines)} {shlex.quote(filepath)} 2>/dev/null"
+            stdin, stdout, stderr = self.ssh.exec_command(cmd, timeout=15)
+            error = stderr.read().decode().strip()
+
+            if error and "No such file" not in error:
+                return False, "", f"Error reading file: {error}"
+
+            content = stdout.read().decode(errors="ignore")
+            return True, content, "Read file content"
+        except Exception as e:
+            return False, "", f"Error: {str(e)}"
+
     def is_connected(self) -> bool:
         """Check if SSH connection is active"""
         return self.ssh is not None

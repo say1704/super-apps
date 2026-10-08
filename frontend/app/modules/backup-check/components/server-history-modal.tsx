@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from 'react';
+import { Fragment, useEffect, useState, useMemo } from 'react';
 import { apiRequest } from '@/lib/auth';
 import ExportButton from '@/components/ExportButton';
 import { exportBackupCheckHistoryPDF } from '@/lib/export';
@@ -8,6 +8,7 @@ import { exportBackupCheckHistoryPDF } from '@/lib/export';
 const ALL_DAYS = 36500;
 const PAGE_SIZE = 50;
 const EXPORT_PAGE_SIZE = 1000;
+const FILES_PAGE_SIZE = 50;
 
 type PeriodOption = 'all' | '30' | '90' | '365';
 
@@ -45,6 +46,18 @@ interface Statistics {
   min_size_gb: number;
 }
 
+interface FileEntry {
+  path: string;
+  section: string | null;
+}
+
+interface FilesState {
+  available: boolean;
+  truncated: boolean;
+  files: FileEntry[];
+  pagination: PaginationInfo | null;
+}
+
 export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistoryModalProps) {
   const [loading, setLoading] = useState(false);
   const [history, setHistory] = useState<HistoryRecord[]>([]);
@@ -55,16 +68,70 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
   const [fullHistory, setFullHistory] = useState<HistoryRecord[]>([]);
   const [reportLoading, setReportLoading] = useState(false);
 
+  // Expandable file-list states (one row expanded at a time)
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesData, setFilesData] = useState<FilesState | null>(null);
+  const [filesPage, setFilesPage] = useState(1);
+  const [filesSearch, setFilesSearch] = useState('');
+
   const daysForPeriod = () => (period === 'all' ? ALL_DAYS : parseInt(period, 10));
 
   useEffect(() => {
     if (isOpen && serverName) {
       setPage(1);
+      setExpandedDate(null);
+      setFilesData(null);
       loadHistory(1);
       loadFullHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, serverName, period]);
+
+  const loadFiles = async (backupDate: string, targetPage: number, q: string) => {
+    setFilesLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(targetPage),
+        page_size: String(FILES_PAGE_SIZE),
+      });
+      if (q.trim()) params.set('q', q.trim());
+      const data = await apiRequest(
+        `/api/backup-check/server/${encodeURIComponent(serverName)}/history/${backupDate}/files?${params.toString()}`
+      );
+      setFilesData({
+        available: data.available,
+        truncated: data.truncated,
+        files: data.files || [],
+        pagination: data.pagination || null,
+      });
+    } catch (e: any) {
+      console.error('Failed to load backup files:', e);
+      setFilesData({ available: false, truncated: false, files: [], pagination: null });
+    } finally {
+      setFilesLoading(false);
+    }
+  };
+
+  const toggleExpand = (backupDate: string | null) => {
+    if (!backupDate) return;
+    if (expandedDate === backupDate) {
+      setExpandedDate(null);
+      return;
+    }
+    setExpandedDate(backupDate);
+    setFilesPage(1);
+    setFilesSearch('');
+    setFilesData(null);
+    loadFiles(backupDate, 1, '');
+  };
+
+  const goToFilesPage = (next: number) => {
+    if (!expandedDate) return;
+    if (filesData?.pagination && (next < 1 || next > filesData.pagination.total_pages)) return;
+    setFilesPage(next);
+    loadFiles(expandedDate, next, filesSearch);
+  };
 
   const loadHistory = async (targetPage: number) => {
     setLoading(true);
@@ -94,6 +161,8 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
   const goToPage = (next: number) => {
     if (pagination && (next < 1 || next > pagination.total_pages)) return;
     setPage(next);
+    setExpandedDate(null);
+    setFilesData(null);
     loadHistory(next);
   };
 
@@ -211,6 +280,7 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
             <table className="w-full">
               <thead className="sticky top-0 bg-white dark:bg-gray-800">
                 <tr className="border-b border-gray-200 dark:border-gray-700">
+                  <th className="w-10 px-2 py-3"></th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Date</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Files</th>
                   <th className="px-4 py-3 text-right text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Size</th>
@@ -218,8 +288,17 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
                 </tr>
               </thead>
               <tbody>
-                {history.map((record, idx) => (
-                  <tr key={idx} className={`border-b dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 ${idx % 2 === 0 ? 'bg-gray-50 dark:bg-gray-900' : 'bg-white dark:bg-gray-800'}`}>
+                {history.map((record, idx) => {
+                  const isExpanded = expandedDate === record.backup_date;
+                  return (
+                  <Fragment key={idx}>
+                  <tr
+                    onClick={() => toggleExpand(record.backup_date)}
+                    className={`border-b dark:border-gray-700 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 ${idx % 2 === 0 ? 'bg-gray-50 dark:bg-gray-900' : 'bg-white dark:bg-gray-800'}`}
+                  >
+                    <td className="px-2 py-3 text-center text-gray-500 dark:text-gray-400">
+                      <span className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                    </td>
                     <td className="px-4 py-3 text-gray-900 dark:text-white">{record.backup_date}</td>
                     <td className="px-4 py-3 text-right text-gray-900 dark:text-white">{record.jumlah_files.toLocaleString()}</td>
                     <td className="px-4 py-3 text-right text-gray-900 dark:text-white">{record.total_size_formatted}</td>
@@ -229,7 +308,71 @@ export function ServerHistoryModal({ serverName, isOpen, onClose }: ServerHistor
                       </span>
                     </td>
                   </tr>
-                ))}
+                  {isExpanded && (
+                    <tr className="bg-gray-100 dark:bg-gray-900/60">
+                      <td colSpan={5} className="px-4 py-4">
+                        {filesLoading ? (
+                          <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-2">
+                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                            Loading files...
+                          </div>
+                        ) : !filesData || !filesData.available ? (
+                          <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+                            Daftar file belum tersedia untuk tanggal ini (perlu scan ulang).
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <input
+                                type="text"
+                                value={filesSearch}
+                                onChange={(e) => setFilesSearch(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') { setFilesPage(1); loadFiles(record.backup_date, 1, filesSearch); } }}
+                                placeholder="Cari file... (Enter)"
+                                className="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white w-64 max-w-full"
+                              />
+                              {filesData.pagination && (
+                                <span className="text-xs text-gray-500 dark:text-gray-400">
+                                  {filesData.pagination.total_records} file
+                                </span>
+                              )}
+                            </div>
+                            {filesData.truncated && (
+                              <div className="text-xs text-amber-600 dark:text-amber-400">
+                                Daftar dipotong (maksimum tersimpan tercapai) — sebagian file mungkin tidak tampil.
+                              </div>
+                            )}
+                            {filesData.files.length === 0 ? (
+                              <div className="text-sm text-gray-500 dark:text-gray-400 py-2">Tidak ada file yang cocok.</div>
+                            ) : (
+                              <ul className="divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden">
+                                {filesData.files.map((f, fi) => (
+                                  <li key={fi} className="flex items-center gap-2 px-3 py-2 bg-white dark:bg-gray-800">
+                                    {f.section && (
+                                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 shrink-0">
+                                        {f.section}
+                                      </span>
+                                    )}
+                                    <span className="font-mono text-xs text-gray-800 dark:text-gray-200 break-all">{f.path}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {filesData.pagination && filesData.pagination.total_pages > 1 && (
+                              <div className="flex items-center justify-end gap-2">
+                                <button onClick={() => goToFilesPage(Math.max(1, filesPage - 1))} disabled={!filesData.pagination.has_prev} className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50 hover:bg-blue-700 font-medium">← Prev</button>
+                                <span className="px-2 py-1 text-xs bg-gray-200 dark:bg-gray-700 rounded-lg">Hal {filesData.pagination.page} / {filesData.pagination.total_pages}</span>
+                                <button onClick={() => goToFilesPage(Math.min(filesData.pagination!.total_pages, filesPage + 1))} disabled={!filesData.pagination.has_next} className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg disabled:opacity-50 hover:bg-blue-700 font-medium">Next →</button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           )}

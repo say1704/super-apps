@@ -1,5 +1,5 @@
 from .base import Base
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Boolean, Index
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Boolean, Index, Text
 from datetime import datetime, timezone
 from utils.timezone import to_iso
 
@@ -21,6 +21,7 @@ class BackupHistory(Base):
     total_size_gb = Column(Float, default=0)
     status = Column(String, default="OK")
     filename = Column(String)
+    file_list = Column(Text, nullable=True)  # JSON: {"files":[{"path","section"}],"truncated":bool}; NULL for legacy records
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     owner_role = Column(String, nullable=True, index=True)

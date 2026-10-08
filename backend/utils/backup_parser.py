@@ -151,6 +151,88 @@ def parse_log_content(filename: str, content: str) -> Optional[Dict[str, Any]]:
     }
 
 
+MAX_FILE_LIST_ENTRIES = 5000  # cap stored file entries per backup to bound blob size
+
+
+def parse_file_list(content: str, max_entries: int = MAX_FILE_LIST_ENTRIES) -> Dict[str, Any]:
+    """
+    Extract the list of backed-up files from a backup log.
+
+    Supports two confirmed formats:
+      Format 1 (flat): file paths between "Daftar file:" and a blank line /
+                       "Jumlah dan Size:" / "Jumlah Files:".
+      Format 2 (grouped): file paths inside the "===== FILES BACKED UP ... ====="
+                       block, grouped by [LOG] / [APP] / [SCRIPT] section headers,
+                       terminated by the "FILES RENAMED" block.
+
+    Returns: {"files": [{"path": str, "section": str|None}, ...], "truncated": bool}
+    """
+    lines = content.splitlines()
+    files: List[Dict[str, Any]] = []
+    truncated = False
+
+    def _add(path: str, section: Optional[str]) -> None:
+        nonlocal truncated
+        path = path.strip()
+        if not path:
+            return
+        if len(files) >= max_entries:
+            truncated = True
+            return
+        files.append({"path": path, "section": section})
+
+    # Format 2 first (more specific marker).
+    backed_up_idx = None
+    for i, line in enumerate(lines):
+        if "FILES BACKED UP" in line.upper():
+            backed_up_idx = i
+            break
+
+    if backed_up_idx is not None:
+        section: Optional[str] = None
+        for line in lines[backed_up_idx + 1:]:
+            stripped = line.strip()
+            upper = stripped.upper()
+            if "FILES RENAMED" in upper:
+                break
+            if stripped.startswith("===") or upper.startswith("JUMLAH FILES"):
+                break
+            if not stripped:
+                continue
+            m = re.match(r"^\[(.+?)\]$", stripped)  # section header e.g. [LOG]
+            if m:
+                section = m.group(1).strip()
+                continue
+            if stripped.lower().startswith("(tidak ada file"):  # empty section marker
+                continue
+            _add(stripped, section)
+        return {"files": files, "truncated": truncated}
+
+    # Format 1: flat "Daftar file:" list.
+    daftar_idx = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*Daftar\s*file\s*:", line, re.IGNORECASE):
+            daftar_idx = i
+            break
+
+    if daftar_idx is not None:
+        # Any path on the same line as the header (rare), then subsequent lines.
+        header_tail = re.sub(r"^\s*Daftar\s*file\s*:", "", lines[daftar_idx], flags=re.IGNORECASE).strip()
+        if header_tail:
+            _add(header_tail, None)
+        for line in lines[daftar_idx + 1:]:
+            stripped = line.strip()
+            upper = stripped.upper()
+            if not stripped:
+                break
+            if upper.startswith("JUMLAH DAN SIZE") or upper.startswith("JUMLAH FILES") or upper.startswith("TOTAL SIZE"):
+                break
+            _add(stripped, None)
+        return {"files": files, "truncated": truncated}
+
+    return {"files": files, "truncated": truncated}
+
+
 def calculate_status(jumlah_files: int, total_size_bytes: int) -> str:
     """
     Calculate backup status based on files and size

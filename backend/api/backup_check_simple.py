@@ -5,12 +5,13 @@ from typing import List, Dict, Any, Optional
 from datetime import date, datetime, timedelta, timezone
 from utils.timezone import utcnow
 import uuid
+import json
 import logging
 import time
 import traceback
 import ipaddress
 from utils.ssh_handler import SSHConnection
-from utils.backup_parser import parse_log_content, calculate_status, MAX_FILES_TO_PROCESS, format_size, get_summary
+from utils.backup_parser import parse_log_content, parse_file_list, calculate_status, MAX_FILES_TO_PROCESS, format_size, get_summary
 from utils.progress_tracker import create_progress_tracker, get_progress, cleanup_progress
 from database import get_db, SessionLocal
 from sqlalchemy.orm import Session
@@ -448,6 +449,73 @@ async def get_server_history(
     }
 
 
+@router.get("/server/{server_name}/history/{backup_date}/files", response_model=dict)
+async def get_server_backup_files(
+    server_name: str,
+    backup_date: str,
+    q: str = Query(None, description="Optional case-insensitive path filter"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    List individual files backed up for a server on a specific date.
+    Data is captured at scan time (BackupHistory.file_list). Legacy records
+    have no file list -> available=False.
+    RBAC: superadmin sees all, others see own role group.
+    """
+    try:
+        target_date = datetime.strptime(backup_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    base_query = db.query(BackupHistory).filter(
+        BackupHistory.server_name == server_name,
+        BackupHistory.backup_date == target_date
+    )
+    base_query = _apply_backup_rbac(base_query, current_user)
+    record = base_query.order_by(desc(BackupHistory.created_at)).first()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="Backup record not found")
+
+    if not record.file_list:
+        return {
+            "server_name": server_name,
+            "backup_date": backup_date,
+            "available": False,
+            "truncated": False,
+            "files": [],
+            "pagination": calculate_pagination(page, page_size, 0).dict()
+        }
+
+    try:
+        parsed = json.loads(record.file_list)
+        files = parsed.get("files", []) if isinstance(parsed, dict) else []
+        truncated = bool(parsed.get("truncated", False)) if isinstance(parsed, dict) else False
+    except (ValueError, TypeError):
+        files = []
+        truncated = False
+
+    if q:
+        ql = q.strip().lower()
+        files = [f for f in files if ql in str(f.get("path", "")).lower()]
+
+    total_records = len(files)
+    offset = get_offset(page, page_size)
+    page_items = files[offset:offset + page_size]
+
+    return {
+        "server_name": server_name,
+        "backup_date": backup_date,
+        "available": True,
+        "truncated": truncated,
+        "files": page_items,
+        "pagination": calculate_pagination(page, page_size, total_records).dict()
+    }
+
+
 @router.get("/progress/{operation_id}", response_model=dict)
 async def get_backup_progress(operation_id: str, current_user: User = Depends(get_current_user)):
     """Get current progress"""
@@ -618,10 +686,14 @@ def process_backup_sync(
 
         existing_dates = thread_db.query(
             BackupHistory.server_name,
-            BackupHistory.backup_date
+            BackupHistory.backup_date,
+            BackupHistory.file_list
         ).all()
         existing_set = {(r.server_name, str(r.backup_date)) for r in existing_dates}
-        logger.info("[INFO] Found %d existing records in DB", len(existing_set))
+        # Records that already have a captured file list -> safe to early-skip (no re-read).
+        # Records in existing_set but NOT here are re-read to backfill file_list (Option A).
+        filled_set = {(r.server_name, str(r.backup_date)) for r in existing_dates if r.file_list}
+        logger.info("[INFO] Found %d existing records in DB (%d already with file list)", len(existing_set), len(filled_set))
 
         for i, filepath in enumerate(files[:MAX_FILES_TO_PROCESS]):
             filename = filepath.split("/")[-1]
@@ -640,8 +712,10 @@ def process_backup_sync(
 
                 if backup_date:
                     server_ip = map_filename_to_ip(filename)
-                    if server_ip and (server_ip, str(backup_date)) in existing_set:
-                        logger.info("[SKIP] %s (already in DB)", filename)
+                    # Skip only if already in DB AND already has a file list.
+                    # If it exists but lacks a file list, fall through to backfill it.
+                    if server_ip and (server_ip, str(backup_date)) in filled_set:
+                        logger.info("[SKIP] %s (already in DB with file list)", filename)
                         continue
 
                 success, content, message = ssh.read_file(filepath)
@@ -664,6 +738,20 @@ def process_backup_sync(
                     BackupHistory.backup_date == backup_date
                 ).first()
 
+                # Capture file list only when needed: a new record, or an existing
+                # record that is still missing its file list (Option A backfill).
+                # Additive; a capture failure must NOT block the record.
+                file_list_json = None
+                if (not existing) or (existing and not existing.file_list):
+                    try:
+                        ok_full, full_content, _ = ssh.read_file_full(filepath)
+                        if ok_full and full_content:
+                            parsed_files = parse_file_list(full_content)
+                            if parsed_files["files"]:
+                                file_list_json = json.dumps(parsed_files, ensure_ascii=False)
+                    except Exception as e:
+                        logger.warning("[FILELIST] Failed to capture file list for %s: %s", filename, e)
+
                 if not existing:
                     total_bytes = parsed["total_size_bytes"]
                     backup_record = BackupHistory(
@@ -676,12 +764,20 @@ def process_backup_sync(
                         total_size_gb=parsed.get("total_size_gb") or round(total_bytes / (1024**3), 4),
                         status=status,
                         filename=filename,
+                        file_list=file_list_json,
                         created_by=user_id,
                         owner_role=user_role
                     )
                     thread_db.add(backup_record)
                     saved_count += 1
                     logger.info("[SAVE] %s", filename)
+                elif not existing.file_list:
+                    # Existing record missing file list -> fill it only (other fields untouched)
+                    if file_list_json:
+                        existing.file_list = file_list_json
+                        logger.info("[FILELIST] Backfilled file list for %s", filename)
+                    else:
+                        logger.info("[SKIP] %s (no file list to backfill)", filename)
                 else:
                     logger.info("[SKIP] %s (duplicate)", filename)
 
