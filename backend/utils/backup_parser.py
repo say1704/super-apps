@@ -181,10 +181,12 @@ def parse_file_list(content: str, max_entries: int = MAX_FILE_LIST_ENTRIES) -> D
             return
         files.append({"path": path, "section": section})
 
-    # Format 2 first (more specific marker).
+    # Format 2 first (more specific marker). Require a banner-style line
+    # ("===== FILES BACKED UP ... =====") so prose that merely mentions the
+    # phrase does not mis-route a Format 1 log into this branch.
     backed_up_idx = None
     for i, line in enumerate(lines):
-        if "FILES BACKED UP" in line.upper():
+        if "FILES BACKED UP" in line.upper() and "=" in line:
             backed_up_idx = i
             break
 
@@ -206,7 +208,9 @@ def parse_file_list(content: str, max_entries: int = MAX_FILE_LIST_ENTRIES) -> D
             if stripped.lower().startswith("(tidak ada file"):  # empty section marker
                 continue
             _add(stripped, section)
-        return {"files": files, "truncated": truncated}
+        if files:
+            return {"files": files, "truncated": truncated}
+        # Banner matched but nothing captured -> fall through to Format 1.
 
     # Format 1: flat "Daftar file:" list.
     daftar_idx = None
@@ -224,8 +228,10 @@ def parse_file_list(content: str, max_entries: int = MAX_FILE_LIST_ENTRIES) -> D
             stripped = line.strip()
             upper = stripped.upper()
             if not stripped:
-                break
-            if upper.startswith("JUMLAH DAN SIZE") or upper.startswith("JUMLAH FILES") or upper.startswith("TOTAL SIZE"):
+                continue  # blank lines inside the block are skipped, not a terminator
+            if (upper.startswith("JUMLAH DAN SIZE") or upper.startswith("JUMLAH FILES")
+                    or upper.startswith("TOTAL SIZE") or "FILES RENAMED" in upper
+                    or stripped.startswith("===")):
                 break
             _add(stripped, None)
         return {"files": files, "truncated": truncated}

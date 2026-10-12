@@ -527,7 +527,7 @@ Dokumen ini mendokumentasikan 26 modul fitur yang tersedia di sistem Super Apps.
   - Manual run untuk server tertentu
   - Daily history per server
   - Server health status (file count, total size, days since last backup)
-  - **Daftar file per hari** _(2026-10-08)_ — expand baris di 📊 Server History untuk melihat file apa saja yang ter-backup hari itu (badge section `[LOG]/[APP]/[SCRIPT]`); live search tanpa Enter. Data ditangkap saat scan ke kolom `backup_history.file_list` (2 format log didukung); record lama tampil "belum tersedia" sampai di-scan ulang
+  - **Daftar file per hari** _(2026-10-08)_ — expand baris di 📊 Server History untuk melihat file apa saja yang ter-backup hari itu (badge section `[LOG]/[APP]/[SCRIPT]`); live search tanpa Enter. Data ditangkap saat scan ke kolom `backup_history.file_list` (2 format log auto-detect: `Daftar file:` flat & `===== FILES BACKED UP =====` grouped); record lama tampil "belum tersedia" sampai di-scan ulang. _(2026-10-12: fix parser Format 1 — baris kosong di dalam daftar tidak lagi memutus capture; deteksi Format 2 diperketat ke banner `=`)_
 - **UI Pages**: `/modules/backup-check`
 - **Data Model**: `backup_records` — server, check_date, files, size_bytes, status; `backup_history.file_list` (Text/JSON nullable) — daftar file ter-backup per hari
 - **RBAC**: Page-level via `UserModuleAccess`
