@@ -227,23 +227,40 @@ class SSHConnection:
     
     def read_file_full(self, filepath: str, max_lines: int = 5000) -> Tuple[bool, str, str]:
         """
-        Read the (capped) full content of a log file, used to extract the
-        backed-up file list. Uses `head -n max_lines` to bound transfer for
-        very large logs. Does not replace read_file (summary extraction).
-        Returns: (success, content, message)
+        Read the log region that holds the backed-up file list, used to extract
+        it. The "Daftar file:" / "FILES BACKED UP" summary can sit anywhere in a
+        long log (verbose output above it), so a plain `head` of the top may miss
+        it. We extract from the first file-list marker to EOF (capped to
+        max_lines), and fall back to `head -n max_lines` when no marker is found.
+        Does not replace read_file (summary extraction). Portable awk (no gawk
+        extensions). Returns: (success, content, message)
         """
         if not self.ssh:
             return False, "", "Not connected"
 
         try:
-            cmd = f"head -n {int(max_lines)} {shlex.quote(filepath)} 2>/dev/null"
+            qf = shlex.quote(filepath)
+            awk_prog = (
+                "!f && (/[Dd]aftar.*[Ff]ile/ || /FILES BACKED UP/){f=1} "
+                "f{print; n++; if(n>=%d) exit}" % int(max_lines)
+            )
+            cmd = "awk '%s' %s 2>/dev/null" % (awk_prog, qf)
             stdin, stdout, stderr = self.ssh.exec_command(cmd, timeout=15)
             error = stderr.read().decode().strip()
+            content = stdout.read().decode(errors="ignore")
+
+            # Fallback to top-of-file if marker extraction yielded nothing
+            # (e.g. awk unavailable, or an unexpected layout).
+            if not content.strip():
+                cmd = f"head -n {int(max_lines)} {qf} 2>/dev/null"
+                stdin, stdout, stderr = self.ssh.exec_command(cmd, timeout=15)
+                err2 = stderr.read().decode().strip()
+                error = err2 or error
+                content = stdout.read().decode(errors="ignore")
 
             if error and "No such file" not in error:
                 return False, "", f"Error reading file: {error}"
 
-            content = stdout.read().decode(errors="ignore")
             return True, content, "Read file content"
         except Exception as e:
             return False, "", f"Error: {str(e)}"
