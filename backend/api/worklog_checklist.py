@@ -167,4 +167,4 @@ async def delete_checklist_item(
     db.delete(item)
     db.commit()
     log_activity(db, current_user.id, "DELETE", "worklog", f"Deleted checklist item {item_id}")
-    return {"status": "deleted"}
+    return {"message": "deleted"}
