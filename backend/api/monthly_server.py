@@ -101,4 +101,4 @@ async def delete_monthly_server_check(item_id: int, db: Session = Depends(get_db
     db.delete(item)
     log_activity(db, current_user.id, "DELETE", "monthly_check", f"Deleted monthly server check {item_id}")
     db.commit()
-    return {"status": "deleted"}
+    return {"message": "deleted"}
