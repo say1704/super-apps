@@ -1,5 +1,5 @@
 from .base import Base
-from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, BigInteger, Float, String, Text, Date, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship, backref
 from datetime import datetime, timezone
 
@@ -84,3 +84,53 @@ class LogCompression(Base):
     version = Column(Integer, default=0)
 
     creator = relationship("User", foreign_keys=[created_by])
+
+
+class LogCompressionRun(Base):
+    """Header satu run Log Compressor (hasil SSH auto-scan parser)."""
+    __tablename__ = "log_compression_run"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(120), nullable=False, index=True)  # dedup key (dari '# SELESAI RUN' / fingerprint)
+    server = Column(String(255), index=True)
+    folder = Column(String(512))
+    app_name = Column(String(255), nullable=True, index=True)
+    mode = Column(String(40), index=True)  # SAFE | DELETE_AFTER_VERIFY | OTHER
+    period_from = Column(String(6), nullable=True)  # YYYYMM
+    period_to = Column(String(6), nullable=True)
+    status = Column(String(40), nullable=True)
+    apps_checked = Column(Integer, default=0)
+    archives_created = Column(Integer, default=0)
+    archives_verified = Column(Integer, default=0)
+    failed = Column(Integer, default=0)
+    files_in_archive = Column(Integer, default=0)
+    files_deleted = Column(Integer, default=0)
+    size_original_bytes = Column(BigInteger, nullable=True)
+    size_archive_bytes = Column(BigInteger, nullable=True)
+    savings_pct = Column(Float, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True, index=True)
+    log_filename = Column(String(512), nullable=True)
+    owner_role = Column(String(50), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    archives = relationship("LogCompressionArchive", back_populates="run",
+                            cascade="all, delete-orphan")
+
+
+class LogCompressionArchive(Base):
+    """Detail per-arsip (.tbz2) dalam satu run."""
+    __tablename__ = "log_compression_archive"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_fk = Column(Integer, ForeignKey("log_compression_run.id"), nullable=False, index=True)
+    archive_path = Column(String(600))
+    year_month = Column(String(6), nullable=True, index=True)  # YYYYMM
+    file_count = Column(Integer, default=0)
+    size_original_bytes = Column(BigInteger, nullable=True)
+    size_archive_bytes = Column(BigInteger, nullable=True)
+    keterangan = Column(String(255), nullable=True)
+
+    run = relationship("LogCompressionRun", back_populates="archives")
