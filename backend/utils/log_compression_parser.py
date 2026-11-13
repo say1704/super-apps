@@ -1,4 +1,4 @@
-"""Parser untuk output Log Compressor (file log_compression-DD-MM-YYYY.log).
+"""Parser untuk output Log Compressor (file log_compression-DD-MM-YYYY_HH-MM-SS.log).
 
 Satu file bisa memuat BANYAK run (dipisah trailer '# SELESAI RUN <id>'). Tiap run
 diparse jadi header (server/folder/mode/periode/ringkasan/ukuran/hemat) + detail per-arsip.

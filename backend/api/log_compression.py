@@ -232,13 +232,46 @@ class CompressionScanRequest(BaseModel):
         return v[:512]
 
 
+class CompressionTestConnRequest(BaseModel):
+    """Test koneksi SSH — tidak butuh path (samakan pola Backup Check /test-connection)."""
+    nas_ip: str
+    username: str
+    password: str
+    port: int = 22
+
+    @field_validator("nas_ip")
+    @classmethod
+    def _v_ip(cls, v: str) -> str:
+        v = v.strip()
+        try:
+            ipaddress.ip_address(v)
+        except ValueError:
+            raise ValueError("Format IP tidak valid")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def _v_user(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Username wajib")
+        return v[:128]
+
+    @field_validator("password")
+    @classmethod
+    def _v_pass(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Password wajib")
+        return v[:256]
+
+
 def _compression_rbac(query, current_user: User):
     if current_user.role != "superadmin":
         return query.filter(LogCompressionRun.owner_role == current_user.role)
     return query
 
 
-def _run_to_dict(r: LogCompressionRun, with_archives: bool = False) -> dict:
+def _run_to_dict(r: LogCompressionRun, with_archives: bool = False, deleted_paths: Optional[set] = None) -> dict:
     d = {
         "id": r.id, "run_id": r.run_id, "server": r.server, "folder": r.folder,
         "app_name": r.app_name, "mode": r.mode, "period_from": r.period_from,
@@ -252,10 +285,19 @@ def _run_to_dict(r: LogCompressionRun, with_archives: bool = False) -> dict:
         "log_filename": r.log_filename,
     }
     if with_archives:
+        dp = deleted_paths or set()
+
+        def _state(path: str) -> str:
+            # status terkini arsip (lintas-run): sumber sudah dihapus bila run ini mode verify-delete,
+            # atau path arsipnya muncul di run DELETE_AFTER_VERIFY lain.
+            if r.mode == "DELETE_AFTER_VERIFY" or path in dp:
+                return "SOURCE_DELETED"
+            return "ARCHIVED"
         d["archives"] = [{
             "archive_path": a.archive_path, "year_month": a.year_month,
             "file_count": a.file_count, "size_original_bytes": a.size_original_bytes,
             "size_archive_bytes": a.size_archive_bytes, "keterangan": a.keterangan,
+            "current_state": _state(a.archive_path),
         } for a in sorted(r.archives, key=lambda x: x.year_month or "")]
     return d
 
@@ -398,7 +440,7 @@ async def compression_scan_progress(operation_id: str, current_user: User = Depe
 
 
 @router.post("/log-compression/insight/test-connection", response_model=dict)
-async def compression_test_connection(req: CompressionScanRequest, db: Session = Depends(get_db),
+async def compression_test_connection(req: CompressionTestConnRequest, db: Session = Depends(get_db),
                                       current_user: User = Depends(get_current_user)):
     ssh = SSHConnection(host=req.nas_ip, username=req.username, password=req.password, port=req.port)
     ok, msg = ssh.connect()
@@ -437,7 +479,16 @@ async def get_compression_run(run_pk: int, db: Session = Depends(get_db),
         raise HTTPException(status_code=404, detail="Run tidak ditemukan")
     if current_user.role != "superadmin" and r.owner_role != current_user.role:
         raise HTTPException(status_code=403, detail="Akses ditolak")
-    return _run_to_dict(r, with_archives=True)
+    # path arsip yang sumbernya sudah dihapus (muncul di run DELETE_AFTER_VERIFY, scope owner)
+    vq = _compression_rbac(
+        db.query(LogCompressionArchive.archive_path)
+        .join(LogCompressionRun, LogCompressionArchive.run_fk == LogCompressionRun.id)
+        .filter(LogCompressionRun.deleted_at.is_(None),
+                LogCompressionRun.mode == "DELETE_AFTER_VERIFY"),
+        current_user,
+    )
+    deleted_paths = {p for (p,) in vq.all()}
+    return _run_to_dict(r, with_archives=True, deleted_paths=deleted_paths)
 
 
 @router.get("/log-compression/insight/summary", response_model=dict)
@@ -479,6 +530,12 @@ async def compression_insight_summary(db: Session = Depends(get_db),
         if r and r.mode == "SAFE" and a.size_original_bytes:
             orig_by_path[a.archive_path] = a.size_original_bytes
     disk_reclaimed = sum(v for p, v in orig_by_path.items() if p in verify_paths)
+    # status terkini per arsip (lintas-run, Option 1 "Link + status terkini"):
+    #  - path arsip SAFE yg SUDAH muncul di run DELETE_AFTER_VERIFY  -> sumber dihapus (disk bebas)
+    #  - path arsip SAFE yg BELUM                                     -> terarsip, sumber masih ada (pending)
+    disk_pending = sum(v for p, v in orig_by_path.items() if p not in verify_paths)
+    archives_reclaimed = sum(1 for p in orig_by_path if p in verify_paths)
+    archives_pending = sum(1 for p in orig_by_path if p not in verify_paths)
 
     by_month = {}
     by_server = {}
@@ -504,6 +561,9 @@ async def compression_insight_summary(db: Session = Depends(get_db),
         "space_after_bytes": space_after,
         "space_saved_bytes": max(space_compressed - space_after, 0),
         "disk_reclaimed_bytes": disk_reclaimed,
+        "disk_pending_bytes": disk_pending,
+        "archives_reclaimed": archives_reclaimed,
+        "archives_pending": archives_pending,
         "avg_savings_pct": round(sum(savings_vals) / len(savings_vals), 1) if savings_vals else 0,
         "files_archived": files_archived,
         "files_deleted": files_deleted,

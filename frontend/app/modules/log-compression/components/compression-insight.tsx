@@ -16,6 +16,7 @@ function fmtBytes(n?: number | null): string {
 interface Archive {
   archive_path: string; year_month: string | null; file_count: number;
   size_original_bytes: number | null; size_archive_bytes: number | null; keterangan: string | null;
+  current_state?: string;
 }
 interface Run {
   id: number; run_id: string; server: string; folder: string; app_name: string | null;
@@ -27,7 +28,9 @@ interface Run {
 interface Summary {
   total_runs: number; by_mode: Record<string, number>;
   space_compressed_bytes: number; space_after_bytes: number; space_saved_bytes: number;
-  disk_reclaimed_bytes: number; avg_savings_pct: number; files_archived: number; files_deleted: number;
+  disk_reclaimed_bytes: number; disk_pending_bytes: number;
+  archives_reclaimed: number; archives_pending: number;
+  avg_savings_pct: number; files_archived: number; files_deleted: number;
   by_month: { year_month: string; saved_bytes: number; original_bytes: number; archives: number }[];
   by_server: { server: string; runs: number; files_deleted: number }[];
 }
@@ -146,7 +149,7 @@ export function CompressionInsight() {
           <input type="number" className="px-3 py-2 border rounded-lg bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white w-24"
             placeholder="Port" value={cred.port} onChange={e => setCred({ ...cred, port: Number(e.target.value) || 22 })} />
         </div>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Membaca file <code>log_compression-DD-MM-YYYY.log</code> di folder; satu file bisa banyak run; duplikat dilewati otomatis.</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">Membaca file <code>log_compression-DD-MM-YYYY_HH-MM-SS.log</code> di folder; satu file bisa banyak run; duplikat dilewati otomatis.</p>
         <div className="mt-3 flex gap-2">
           <button onClick={testConn} disabled={testing} className="px-4 py-2 rounded-lg border border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-sm disabled:opacity-50">
             {testing ? 'Menguji…' : 'Test Connection'}</button>
@@ -167,16 +170,17 @@ export function CompressionInsight() {
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {[
-            { l: 'Disk Dibebaskan', v: fmtBytes(summary.disk_reclaimed_bytes), c: 'text-emerald-600 dark:text-emerald-400' },
+            { l: 'Disk Dibebaskan', v: fmtBytes(summary.disk_reclaimed_bytes), c: 'text-emerald-600 dark:text-emerald-400', s: `${summary.archives_reclaimed} arsip · sumber dihapus` },
+            { l: 'Disk Pending', v: fmtBytes(summary.disk_pending_bytes), c: 'text-amber-600 dark:text-amber-400', s: `${summary.archives_pending} arsip · sumber masih ada` },
             { l: 'Rata² Hemat', v: `${summary.avg_savings_pct}%`, c: 'text-blue-600 dark:text-blue-400' },
             { l: 'Space Dihemat', v: fmtBytes(summary.space_saved_bytes), c: 'text-blue-600 dark:text-blue-400' },
-            { l: 'File Dihapus', v: summary.files_deleted.toLocaleString(), c: 'text-amber-600 dark:text-amber-400' },
             { l: 'File Diarsip', v: summary.files_archived.toLocaleString(), c: 'text-gray-700 dark:text-gray-300' },
             { l: 'Total Run', v: String(summary.total_runs), c: 'text-gray-700 dark:text-gray-300' },
           ].map((k, i) => (
             <div key={i} className="p-3 rounded-lg bg-white dark:bg-gray-800 shadow">
               <div className="text-xs text-gray-500 dark:text-gray-400">{k.l}</div>
               <div className={`text-xl font-bold ${k.c}`}>{k.v}</div>
+              {k.s && <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{k.s}</div>}
             </div>
           ))}
         </div>
@@ -228,7 +232,8 @@ export function CompressionInsight() {
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-gray-600 dark:text-gray-400">
                     <th className="px-3 py-2">Arsip</th><th className="px-3 py-2 text-right">File</th>
-                    <th className="px-3 py-2 text-right">Asli</th><th className="px-3 py-2 text-right">Arsip</th><th className="px-3 py-2">Keterangan</th>
+                    <th className="px-3 py-2 text-right">Asli</th><th className="px-3 py-2 text-right">Arsip</th>
+                    <th className="px-3 py-2">Status Sumber</th><th className="px-3 py-2">Keterangan</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -238,6 +243,11 @@ export function CompressionInsight() {
                       <td className="px-3 py-2 text-right">{a.file_count}</td>
                       <td className="px-3 py-2 text-right text-gray-600 dark:text-gray-300">{fmtBytes(a.size_original_bytes)}</td>
                       <td className="px-3 py-2 text-right text-blue-600 dark:text-blue-400">{fmtBytes(a.size_archive_bytes)}</td>
+                      <td className="px-3 py-2">
+                        {a.current_state === 'SOURCE_DELETED'
+                          ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Sumber dihapus</span>
+                          : <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Sumber masih ada</span>}
+                      </td>
                       <td className="px-3 py-2 text-xs text-gray-500">{a.keterangan || '—'}</td>
                     </tr>
                   ))}
