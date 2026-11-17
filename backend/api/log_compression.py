@@ -9,6 +9,7 @@ import logging
 import threading
 import uuid
 import ipaddress
+import re
 
 from database import get_db, SessionLocal
 from models import User, LogCompression, LogCompressionRun, LogCompressionArchive
@@ -570,3 +571,73 @@ async def compression_insight_summary(db: Session = Depends(get_db),
         "by_month": [{"year_month": k, **v} for k, v in sorted(by_month.items())],
         "by_server": [{"server": k, **v} for k, v in sorted(by_server.items())],
     }
+
+
+_IP_RE = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+
+
+def _server_ip_from_path(path: str) -> str:
+    m = _IP_RE.search(path or "")
+    return m.group(1) if m else "lainnya"
+
+
+def _app_from_archive_path(path: str) -> str:
+    """Nama aplikasi = folder tepat sebelum '/tahun-YYYY/...'."""
+    head = (path or "").split("/tahun-")[0]
+    name = head.rsplit("/", 1)[-1]
+    return name or "-"
+
+
+@router.get("/log-compression/insight/by-server", response_model=dict)
+async def compression_by_server(db: Session = Depends(get_db),
+                                current_user: User = Depends(get_current_user)):
+    """Kelompokkan arsip per IP server (diambil dari path) -> per aplikasi -> daftar bulan + status terkini.
+    Status: ARCHIVED (terzip, sumber masih ada) / SOURCE_DELETED (terzip & sumber dihapus)."""
+    runs = _compression_rbac(
+        db.query(LogCompressionRun).filter(LogCompressionRun.deleted_at.is_(None)), current_user
+    ).all()
+    by_run = {r.id: r for r in runs}
+    run_ids = list(by_run.keys())
+    archives = []
+    if run_ids:
+        archives = db.query(LogCompressionArchive).filter(
+            LogCompressionArchive.run_fk.in_(run_ids)).all()
+    # path arsip yang sumbernya sudah dihapus (muncul di run DELETE_AFTER_VERIFY)
+    deleted_paths = {a.archive_path for a in archives
+                     if by_run.get(a.run_fk) and by_run[a.run_fk].mode == "DELETE_AFTER_VERIFY"}
+    # collapse per archive_path: utamakan record dari run SAFE (punya ukuran asli)
+    best: dict = {}
+    for a in archives:
+        r = by_run.get(a.run_fk)
+        prefer = bool(r and r.mode == "SAFE" and a.size_original_bytes)
+        cur = best.get(a.archive_path)
+        if cur is None or (prefer and not cur["_safe"]):
+            best[a.archive_path] = {
+                "archive_path": a.archive_path, "year_month": a.year_month,
+                "file_count": a.file_count, "size_original_bytes": a.size_original_bytes,
+                "size_archive_bytes": a.size_archive_bytes, "_safe": prefer,
+            }
+    # susun: ip -> app -> daftar arsip
+    servers: dict = {}
+    for path, rec in best.items():
+        ip = _server_ip_from_path(path)
+        app = _app_from_archive_path(path)
+        state = "SOURCE_DELETED" if path in deleted_paths else "ARCHIVED"
+        servers.setdefault(ip, {}).setdefault(app, []).append({
+            "archive_path": rec["archive_path"], "year_month": rec["year_month"],
+            "file_count": rec["file_count"], "size_original_bytes": rec["size_original_bytes"],
+            "size_archive_bytes": rec["size_archive_bytes"], "state": state,
+        })
+    out = []
+    for ip in sorted(servers):
+        apps_out = []
+        s_arch = s_del = 0
+        for app in sorted(servers[ip]):
+            arr = sorted(servers[ip][app], key=lambda x: x["year_month"] or "")
+            deleted = sum(1 for x in arr if x["state"] == "SOURCE_DELETED")
+            apps_out.append({"app_name": app, "archives": arr,
+                             "total": len(arr), "deleted": deleted, "archived": len(arr) - deleted})
+            s_arch += len(arr); s_del += deleted
+        out.append({"server_ip": ip, "apps": apps_out,
+                    "total_archives": s_arch, "deleted": s_del, "archived": s_arch - s_del})
+    return {"servers": out}

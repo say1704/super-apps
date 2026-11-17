@@ -81,29 +81,52 @@ def _split_runs(content: str) -> List[str]:
     return [r for r in runs if r.strip()]
 
 
-_ARCHIVE_ROW = re.compile(
+# Format LAMA: | <path>.tbz2 | <jumlah> | <asli> | <arsip> | <keterangan> |
+_ARCHIVE_ROW_PATHFIRST = re.compile(
     r"^\s*\|\s*(\S+\.tbz2)\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*$",
+    re.MULTILINE,
+)
+# Format BARU: | <jumlah> | <asli> | <arsip> | <keterangan> | <path>.tbz2 |  (path absolut, kolom terakhir)
+_ARCHIVE_ROW_PATHLAST = re.compile(
+    r"^\s*\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*(\S+\.tbz2)\s*\|\s*$",
     re.MULTILINE,
 )
 
 
+def _archive_dict(path: str, count: str, asli: str, arsip: str, ket: str) -> Dict[str, Any]:
+    path = path.strip()
+    ym_m = re.search(r"_(\d{6})\.tbz2$", path)
+    return {
+        "archive_path": path,
+        "year_month": ym_m.group(1) if ym_m else None,
+        "file_count": int(count),
+        "size_original_bytes": parse_size(asli),
+        "size_archive_bytes": parse_size(arsip),
+        "keterangan": ket.strip() or None,
+    }
+
+
 def _parse_archives(text: str) -> List[Dict[str, Any]]:
+    """Tangguh ke-2 layout tabel: path di kolom pertama (lama) ATAU kolom terakhir (baru)."""
     out: List[Dict[str, Any]] = []
-    for m in _ARCHIVE_ROW.finditer(text):
-        archive_path = m.group(1).strip()
-        ym = None
-        ym_m = re.search(r"_(\d{6})\.tbz2$", archive_path)
-        if ym_m:
-            ym = ym_m.group(1)
-        out.append({
-            "archive_path": archive_path,
-            "year_month": ym,
-            "file_count": int(m.group(2)),
-            "size_original_bytes": parse_size(m.group(3)),
-            "size_archive_bytes": parse_size(m.group(4)),
-            "keterangan": m.group(5).strip() or None,
-        })
+    seen: set = set()
+    # path di depan
+    for m in _ARCHIVE_ROW_PATHFIRST.finditer(text):
+        d = _archive_dict(m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
+        if d["archive_path"] not in seen:
+            seen.add(d["archive_path"]); out.append(d)
+    # path di belakang
+    for m in _ARCHIVE_ROW_PATHLAST.finditer(text):
+        d = _archive_dict(m.group(5), m.group(1), m.group(2), m.group(3), m.group(4))
+        if d["archive_path"] not in seen:
+            seen.add(d["archive_path"]); out.append(d)
     return out
+
+
+def _app_from_path(path: str) -> Optional[str]:
+    base = path.rsplit("/", 1)[-1]  # nama file arsip
+    m = re.match(r"(.+?)_\d{6}\.tbz2$", base)
+    return m.group(1) if m else (base or None)
 
 
 def _parse_run(segment: str) -> Optional[Dict[str, Any]]:
@@ -129,7 +152,7 @@ def _parse_run(segment: str) -> Optional[Dict[str, Any]]:
         savings_pct = float(um.group(3))
 
     archives = _parse_archives(segment)
-    app_name = archives[0]["archive_path"].split("/")[0] if archives else None
+    app_name = _app_from_path(archives[0]["archive_path"]) if archives else None
 
     run_id = _first(r"#\s*SELESAI RUN\s+(\S+)", segment)
     started_at = _parse_dt(_first(r"^Mulai\s*:\s*([0-9:\- ]+?)\s*$", segment))

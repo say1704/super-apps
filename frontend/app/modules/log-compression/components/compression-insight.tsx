@@ -35,6 +35,18 @@ interface Summary {
   by_server: { server: string; runs: number; files_deleted: number }[];
 }
 
+interface ServerArchive {
+  archive_path: string; year_month: string | null; file_count: number;
+  size_original_bytes: number | null; size_archive_bytes: number | null; state: string;
+}
+interface ServerApp { app_name: string; archives: ServerArchive[]; total: number; deleted: number; archived: number; }
+interface ServerGroup { server_ip: string; apps: ServerApp[]; total_archives: number; deleted: number; archived: number; }
+
+function fmtYM(ym: string | null): string {
+  if (!ym || ym.length !== 6) return ym || '—';
+  return `${ym.slice(0, 4)}-${ym.slice(4)}`;
+}
+
 const MODE_BADGE: Record<string, string> = {
   SAFE: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
   DELETE_AFTER_VERIFY: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
@@ -49,18 +61,23 @@ export function CompressionInsight() {
   const [progress, setProgress] = useState<any>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [servers, setServers] = useState<ServerGroup[]>([]);
+  const [view, setView] = useState<'runs' | 'servers'>('runs');
+  const [openIp, setOpenIp] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Run | null>(null);
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [s, r] = await Promise.all([
+      const [s, r, sv] = await Promise.all([
         apiRequest('/api/log-compression/insight/summary'),
         apiRequest('/api/log-compression/insight/runs?page=1&page_size=100'),
+        apiRequest('/api/log-compression/insight/by-server'),
       ]);
       setSummary(s);
       setRuns(r.data || []);
+      setServers(sv.servers || []);
     } catch (e: any) {
       // diamkan bila belum ada data
     } finally {
@@ -186,7 +203,74 @@ export function CompressionInsight() {
         </div>
       )}
 
+      {/* View switcher */}
+      <div className="flex gap-2">
+        <button onClick={() => setView('runs')} className={`px-3 py-1.5 rounded-lg text-sm ${view === 'runs' ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>Per Run</button>
+        <button onClick={() => setView('servers')} className={`px-3 py-1.5 rounded-lg text-sm ${view === 'servers' ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}`}>Per Server IP</button>
+      </div>
+
+      {/* Per-server drill-down */}
+      {view === 'servers' && (
+        <div className="space-y-2">
+          {servers.length === 0 && (
+            <div className="rounded-lg bg-white dark:bg-gray-800 shadow px-4 py-6 text-center text-gray-500">{loading ? 'Memuat…' : 'Belum ada data. Jalankan Scan Compressor.'}</div>
+          )}
+          {servers.map(sv => (
+            <div key={sv.server_ip} className="rounded-lg bg-white dark:bg-gray-800 shadow overflow-hidden">
+              <button onClick={() => setOpenIp(openIp === sv.server_ip ? null : sv.server_ip)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/40">
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-400">{openIp === sv.server_ip ? '▾' : '▸'}</span>
+                  <span className="font-mono font-semibold text-gray-900 dark:text-white">{sv.server_ip}</span>
+                  <span className="text-xs text-gray-500">{sv.apps.length} aplikasi</span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">{sv.total_archives} arsip</span>
+                  <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">{sv.archived} sumber ada</span>
+                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">{sv.deleted} dihapus</span>
+                </div>
+              </button>
+              {openIp === sv.server_ip && (
+                <div className="border-t border-gray-200 dark:border-gray-700 p-3 space-y-4">
+                  {sv.apps.map(app => (
+                    <div key={app.app_name}>
+                      <div className="font-mono text-sm text-gray-800 dark:text-gray-200 mb-1">{app.app_name} <span className="text-xs text-gray-500">({app.total} bulan · {app.deleted} dihapus)</span></div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-gray-600 dark:text-gray-400">
+                              <th className="px-3 py-1.5">Bulan</th><th className="px-3 py-1.5 text-right">File</th>
+                              <th className="px-3 py-1.5 text-right">Asli</th><th className="px-3 py-1.5 text-right">Arsip</th>
+                              <th className="px-3 py-1.5">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {app.archives.map((a, i) => (
+                              <tr key={i} className="border-b border-gray-100 dark:border-gray-700/50">
+                                <td className="px-3 py-1.5 font-mono text-xs text-gray-700 dark:text-gray-300">{fmtYM(a.year_month)}</td>
+                                <td className="px-3 py-1.5 text-right">{a.file_count}</td>
+                                <td className="px-3 py-1.5 text-right text-gray-600 dark:text-gray-300">{fmtBytes(a.size_original_bytes)}</td>
+                                <td className="px-3 py-1.5 text-right text-blue-600 dark:text-blue-400">{fmtBytes(a.size_archive_bytes)}</td>
+                                <td className="px-3 py-1.5">
+                                  {a.state === 'SOURCE_DELETED'
+                                    ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Terzip &amp; dihapus</span>
+                                    : <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Terzip, sumber ada</span>}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Runs table */}
+      {view === 'runs' && (
       <div className="rounded-lg bg-white dark:bg-gray-800 shadow overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -214,6 +298,7 @@ export function CompressionInsight() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Detail modal */}
       {selected && (
