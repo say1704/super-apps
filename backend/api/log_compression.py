@@ -339,7 +339,7 @@ def process_compression_scan(operation_id: str, req: CompressionScanRequest,
             fname = filepath.split("/")[-1]
             tracker.update(i + 1, total, fname)
             try:
-                ok, content, _ = ssh.read_file_full(filepath)
+                ok, content, _ = ssh.read_file_raw(filepath)
                 if not ok or not content:
                     runs_failed += 1
                     continue

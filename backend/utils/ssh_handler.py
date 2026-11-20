@@ -265,6 +265,30 @@ class SSHConnection:
         except Exception as e:
             return False, "", f"Error: {str(e)}"
 
+    def read_file_raw(self, filepath: str, max_bytes: int = 20 * 1024 * 1024) -> Tuple[bool, str, str]:
+        """Read the file, keeping the END (capped at max_bytes for safety).
+
+        Unlike read_file_full (Backup Check: marker-based, falls back to the top
+        `head -n` lines), this keeps the whole file when it fits. We use `tail -c`
+        (not `head -c`) so that for parsers whose header/summary/table sits at EOF
+        after thousands of verbose lines (e.g. Log Compressor), an over-cap file
+        still keeps the footer — only the unused verbose top is dropped.
+        Returns: (success, content, message)
+        """
+        if not self.ssh:
+            return False, "", "Not connected"
+        try:
+            qf = shlex.quote(filepath)
+            cmd = "tail -c %d %s 2>/dev/null" % (int(max_bytes), qf)
+            stdin, stdout, stderr = self.ssh.exec_command(cmd, timeout=30)
+            error = stderr.read().decode().strip()
+            content = stdout.read().decode(errors="ignore")
+            if error and "No such file" not in error:
+                return False, "", f"Error reading file: {error}"
+            return True, content, "Read file content"
+        except Exception as e:
+            return False, "", f"Error: {str(e)}"
+
     def is_connected(self) -> bool:
         """Check if SSH connection is active"""
         return self.ssh is not None
